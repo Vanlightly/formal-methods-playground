@@ -179,6 +179,7 @@ MakeActive(a, q) ==
     /\ UNCHANGED << app, queue, app_id, id, per_queue_releases, total_releases >>
 
 
+(* TRYING TO MAKE NON-DETERMINISM WORK - WIP
 StartableApps ==
     { a \in app : Startable(a) } 
 
@@ -210,9 +211,6 @@ NextEnabled ==
     \/ ReleasableApps # {}
     \/ ActivatableApps # {}
 
-\* With RandomElement to avoid non-determinism, but distribution favours low state spaces
-\* TODO: Investigate why
-
 NonDeterministicStart ==
     /\ StartableApps # {}
     /\ Start(RandomElement(StartableApps))
@@ -236,26 +234,32 @@ NonDeterministicMakeActive ==
     /\ LET a == RandomElement(ActivatableApps)
        IN MakeActive(a, RandomElement(ActivatableQueues(a)))
 
+\* True when every application has a consumer on every queue
+\* (either as the active consumer or in the queue's subscriber queue)
+AllAppsSubscribedOnAllQueues ==
+    \A a \in app : 
+        \A q \in queue : 
+            \/ active[q] = a 
+            \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
+
 RandomNext ==
     \/ NonDeterministicStart
     \/ NonDeterministicStop
     \/ NonDeterministicSubscribe
-    \/ NonDeterministicRelease
-    \/ NonDeterministicMakeActive
+    \/ /\ AllAppsSubscribedOnAllQueues
+       /\ \/ NonDeterministicRelease
+          \/ NonDeterministicMakeActive
+*)          
 
-\* The original - works but is VERY slow for large state spaces due to non-determinism
-(*
 RandomNext ==
     \E a \in app :
         \/ Start(a)
         \/ Stop(a)
         \/ \E q \in queue :
             \/ SubscribeToOneQueue(a, q)
-            \/ Release(a, q)
-            \/ MakeActive(a, q)
-*)            
-
-  
+            \/ /\ AllAppsSubscribedOnAllQueues
+               /\ \/ Release(a, q)
+                  \/ MakeActive(a, q)
 
 SequentialNext ==
     \E a \in app :
@@ -263,8 +267,9 @@ SequentialNext ==
         \/ Stop(a)
         \/ SubscribeToAllQueues(a)
         \/ \E q \in queue :
-            \/ Release(a, q)
-            \/ MakeActive(a, q)
+            /\ AllAppsSubscribedOnAllQueues
+            /\ \/ Release(a, q)
+               \/ MakeActive(a, q)
         
 
 (***************************************************************************)
@@ -283,17 +288,8 @@ IsBalanced ==
         /\ app_id[a2] # 0
         /\ AppActiveCount(a1) - AppActiveCount(a2) \in { -1, 0, 1}
          
-\* True when every application has a consumer on every queue
-\* (either as the active consumer or in the queue's subscriber queue)
-AllAppsSubscribedOnAllQueues ==
-    /\ \A a \in app : 
-        \E q \in queue : 
-            \/ active[q] = a 
-            \/ /\ subscriber_queue[q] # <<>>
-               /\ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
-    
 RandomPostCondition == 
-    IF (~ ENABLED NextEnabled) THEN
+    IF (~ ENABLED RandomNext) THEN
         IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
             /\ \A q \in queue :
                 /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
@@ -306,11 +302,13 @@ RandomPostCondition ==
 
 SequentialPostCondition == 
     IF (~ ENABLED SequentialNext) THEN
-        /\ AllAppsSubscribedOnAllQueues
-        /\ IsBalanced
-        /\ \A q \in queue :
-            /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
-        /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+        IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
+            /\ \A q \in queue :
+                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+        ELSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE) \* this should never be printed
+            /\ FALSE
     ELSE
         id \in Nat
 

@@ -46,7 +46,7 @@ Start(a) ==
 Stop(a) ==
     \* enabling conditions
     /\ app_id[a] # 0
-    /\ id < Cardinality(A) + RESTART_LIMIT
+    /\ id <= Cardinality(A) + RESTART_LIMIT
     \* actions
     /\ subscriber_queue' = [q \in Q |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
     /\ active' = [q \in Q |-> IF active[q] = a THEN 0 ELSE active[q]] 
@@ -155,14 +155,24 @@ MakeActive(a, q) ==
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
     /\ UNCHANGED << app_id, id, per_queue_releases, total_releases >>
 
+
+\* True when every application has a consumer on every queue
+\* (either as the active consumer or in the queue's subscriber queue)
+AllAppsSubscribedOnAllQueues ==
+    \A a \in A : 
+        \A q \in Q : 
+            \/ active[q] = a 
+            \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
+
 RandomNext ==
     \E a \in A :
         \/ Start(a)
         \/ Stop(a)
         \/ \E q \in Q :
             \/ SubscribeToOneQueue(a, q)
-            \/ Release(a, q)
-            \/ MakeActive(a, q)
+            \/ /\ AllAppsSubscribedOnAllQueues
+               /\ \/ Release(a, q)
+                  \/ MakeActive(a, q)
 
 SequentialNext ==
     \E a \in A :
@@ -170,10 +180,10 @@ SequentialNext ==
         \/ Stop(a)
         \/ SubscribeToAllQueues(a)
         \/ \E q \in Q :
-            \/ Release(a, q)
-            \/ MakeActive(a, q)
+            /\ AllAppsSubscribedOnAllQueues
+            /\ \/ Release(a, q)
+               \/ MakeActive(a, q)
         
-
 (***************************************************************************)
 (* Invariants                                                              *)
 (***************************************************************************)
@@ -189,32 +199,26 @@ IsBalanced ==
         /\ app_id[a1] # 0
         /\ app_id[a2] # 0
         /\ AppActiveCount(a1) - AppActiveCount(a2) \in { -1, 0, 1}
-         
-\* True when every application has a consumer on every queue
-\* (either as the active consumer or in the queue's subscriber queue)
-AllAppsSubscribedOnAllQueues ==
-    \A a \in A : 
-        \A q \in Q : 
-            \/ active[q] = a 
-            \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
     
 RandomPostCondition == 
     IF (~ ENABLED RandomNext) THEN
-        /\ AllAppsSubscribedOnAllQueues
-        /\ IsBalanced
-        /\ \A q \in Q :
-            /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-        /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
+            /\ \A q \in Q :
+                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        ELSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
         id \in Nat
 
 SequentialPostCondition == 
     IF (~ ENABLED SequentialNext) THEN
-        /\ AllAppsSubscribedOnAllQueues
-        /\ IsBalanced
-        /\ \A q \in Q :
-            /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-        /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
+            /\ \A q \in Q :
+                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        ELSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
         id \in Nat
 

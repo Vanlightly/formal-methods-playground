@@ -46,6 +46,7 @@ parser.add_argument('--apps', help='The maximum number of apps - only used when 
 parser.add_argument('--app_ratio', help='The maximum number of apps as a ratio of queues e.g. 1.5 will create 1.5 as many apps as queues')
 parser.add_argument('--output_dir', help='The output directory where tlc output is saved to')
 parser.add_argument('--all_perms', help='true will generate all permuations of app and queue count')
+parser.add_argument('--workers', help='The number of TLC workers')
 
 args=parser.parse_args()
 
@@ -66,7 +67,8 @@ if args.all_perms.upper() == "TRUE":
             exit_code = subprocess.call(["bash", "simulate.sh", args.spec, 
                             "spec.cfg",
                             args.behaviours,
-                            f"results/{args.output_dir}/{queue_count}q_{app_count}a.log"], cwd=".")
+                            f"results/{args.output_dir}/{queue_count}q_{app_count}a.log",
+                            args.workers], cwd=".")
             if exit_code != 0:
                 print("Simulation failed")
                 exit(1)
@@ -77,7 +79,8 @@ else:
     exit_code = subprocess.call(["bash", "simulate.sh", args.spec, 
                     "spec.cfg",
                     args.behaviours,
-                    f"results/{args.output_dir}/{queue_count}q_{app_count}a.log"], cwd=".")
+                    f"results/{args.output_dir}/{queue_count}q_{app_count}a.log",
+                    args.workers], cwd=".")
     if exit_code != 0:
         print("Simulation failed")
         exit(1)

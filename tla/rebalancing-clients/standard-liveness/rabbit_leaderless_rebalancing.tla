@@ -134,7 +134,7 @@ Start(a) ==
 Stop(a) ==
     \* enabling conditions
     /\ app_id[a] # 0
-    /\ id < Cardinality(A) + RESTART_LIMIT
+    /\ id <= Cardinality(A) + RESTART_LIMIT
     \* actions
     /\ subscriber_queue' = [q \in Q |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
     /\ active' = [q \in Q |-> IF active[q] = a THEN 0 ELSE active[q]] 

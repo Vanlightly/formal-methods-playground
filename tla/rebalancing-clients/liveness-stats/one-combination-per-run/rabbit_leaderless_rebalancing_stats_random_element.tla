@@ -260,12 +260,22 @@ NonDeterministicMakeActive ==
     /\ LET a == RandomElement(ActivatableApps)
        IN MakeActive(a, RandomElement(ActivatableQueues(a)))
 
+\* True when every application has a consumer on every queue
+\* (either as the active consumer or in the queue's subscriber queue)
+AllAppsSubscribedOnAllQueues ==
+    \A a \in A : 
+        \A q \in Q : 
+            \/ active[q] = a 
+            \/ /\ subscriber_queue[q] # <<>>
+               /\ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
+
 RandomNext ==
     \/ NonDeterministicStart
     \/ NonDeterministicStop
     \/ NonDeterministicSubscribe
-    \/ NonDeterministicRelease
-    \/ NonDeterministicMakeActive
+    \/ /\ AllAppsSubscribedOnAllQueues
+       /\ \/ NonDeterministicRelease
+          \/ NonDeterministicMakeActive
 
 \* The original - works but is VERY slow for large state spaces due to non-determinism
 (*
@@ -273,10 +283,10 @@ RandomNext ==
     \E a \in A :
         \/ Start(a)
         \/ Stop(a)
-        \/ \E q \in Q :
-            \/ SubscribeToOneQueue(a, q)
-            \/ Release(a, q)
-            \/ MakeActive(a, q)
+        \/ SubscribeToOneQueue(a, q)
+        \/ /\ AllAppsSubscribedOnAllQueues
+           /\ \/ Release(a, q)
+              \/ MakeActive(a, q)
 *)
 
 SequentialNext ==
@@ -305,15 +315,6 @@ IsBalanced ==
         /\ app_id[a2] # 0
         /\ AppActiveCount(a1) - AppActiveCount(a2) \in { -1, 0, 1}
          
-\* True when every application has a consumer on every queue
-\* (either as the active consumer or in the queue's subscriber queue)
-AllAppsSubscribedOnAllQueues ==
-    \A a \in A : 
-        \A q \in Q : 
-            \/ active[q] = a 
-            \/ /\ subscriber_queue[q] # <<>>
-               /\ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
-    
 RandomPostCondition == 
     IF (~ ENABLED NextEnabled) THEN
         IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
@@ -321,18 +322,18 @@ RandomPostCondition ==
                 /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
             /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
         ELSE
-            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE) \* this should never be printed
-            /\ FALSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
         id \in Nat
 
 SequentialPostCondition == 
-    IF (~ ENABLED SequentialNext) THEN
-        /\ AllAppsSubscribedOnAllQueues
-        /\ IsBalanced
-        /\ \A q \in Q :
-            /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-        /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+    IF (~ ENABLED NextEnabled) THEN
+        IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
+            /\ \A q \in Q :
+                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        ELSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
         id \in Nat
 
