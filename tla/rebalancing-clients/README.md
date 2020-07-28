@@ -1,4 +1,4 @@
-# Analsysis of a RabbitMQ Rebalancing Clients Algorithm
+# Analysis of a RabbitMQ Rebalancing Clients Algorithm
 
 ## Problem (Domain)
 
@@ -40,3 +40,7 @@ Use simulation mode to generate these metrics that can be turned into csvs with 
 
 Example charts with 10 queues and variable number of apps:
 ![](https://github.com/Vanlightly/formal-methods-playground/blob/master/tla/rebalancing-clients/metrics_as_function_of_queue_app_count.png)
+
+## Current state of work
+
+Only the standard liveness variant is truthworthy at this point in folder `standard-liveness`. Various lines of investigation regarding metrics collection are WIP under `liveness-stats`.
