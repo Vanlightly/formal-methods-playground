@@ -42,18 +42,24 @@ StartedApps ==
     { a \in app : app_id[a] # 0 }
 
 \* A stopped app_id starts and is assigned an id
+
+Startable(a) == app_id[a] = 0
+
 Start(a) ==
     \* enabling conditions 
-    /\ app_id[a] = 0
+    /\ Startable(a)
     \* actions
     /\ app_id' = [app_id EXCEPT ![a] = id]
     /\ id' = id + 1
     /\ UNCHANGED << app, queue, subscriber_queue, active, per_queue_releases, total_releases >>
 
-Stop(a) ==
-    \* enabling conditions
+Stoppable(a) ==
     /\ app_id[a] # 0
     /\ id < Cardinality(app) + RESTART_LIMIT
+
+Stop(a) ==
+    \* enabling conditions
+    /\ Stoppable(a)
     \* actions
     /\ subscriber_queue' = [q \in queue |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
     /\ active' = [q \in queue |-> IF active[q] = a THEN 0 ELSE active[q]] 
@@ -65,10 +71,14 @@ AppInSubscribeQueue(a, q) ==
 
 \* If an app is not subscribed to a queue, then subscribe
 \* This action is used when we want to verify with random subscribe ordering
+Subscribeable(a, q) ==
+    /\ \/ subscriber_queue[q] = <<>>
+       \/ ~\E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
+    /\ active[q] # a
+
 SubscribeToOneQueue(a, q) ==
     \* enabling conditions 
-    /\ ~\E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
-    /\ active[q] # a
+    /\ Subscribeable(a, q)
     \* actions
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = Append(@, a)]
     /\ UNCHANGED << app, queue, active, app_id, id, per_queue_releases, total_releases >>
@@ -136,11 +146,14 @@ IdealNumber(a) ==
                     ELSE
                         ideal 
 
+Releasable(a, q) ==
+    /\ active[q] = a
+    /\ AppActiveCount(a) > IdealNumber(a) 
+
 \* Releases one queue if it has too many active consumers
 Release(a, q) ==
     \* enabling conditions 
-    /\ active[q] = a
-    /\ AppActiveCount(a) > IdealNumber(a) 
+    /\ Releasable(a, q)
     \* actions
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
     /\ per_queue_releases' = [per_queue_releases EXCEPT ![q] = @ + 1]
@@ -151,27 +164,98 @@ Release(a, q) ==
           /\ UNCHANGED active
     /\ UNCHANGED << app, queue, app_id, id >>
 
-\* The SAC queue assigns active status to the next consumer in the subscriber queue
-MakeActive(a, q) ==
-    \* enabling conditions 
+Activatable(a, q) ==
     /\ Cardinality(DOMAIN subscriber_queue[q]) > 0 
     /\ Head(subscriber_queue[q]) = a
     /\ active[q] = 0
+
+\* The SAC queue assigns active status to the next consumer in the subscriber queue
+MakeActive(a, q) ==
+    \* enabling conditions 
+    /\ Activatable(a, q)
     \* actions
     /\ active' = [active EXCEPT ![q] = a]
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
     /\ UNCHANGED << app, queue, app_id, id, per_queue_releases, total_releases >>
 
+
+StartableApps ==
+    { a \in app : Startable(a) } 
+
+StoppableApps ==
+    { a \in app : Stoppable(a)  } 
+
+SubscribeableApps ==
+    { a \in app : \E q \in queue : Subscribeable(a, q) }
+
+SubscribeableQueues(a) ==
+    { q \in queue : Subscribeable(a, q) }
+
+ReleasableApps ==
+    { a \in app : \E q \in queue : Releasable(a, q) }
+
+ReleasableQueues(a) ==
+    { q \in queue : Releasable(a, q) }
+
+ActivatableApps ==
+    { a \in app : \E q \in queue : Activatable(a, q) }
+
+ActivatableQueues(a) ==
+    { q \in queue : Activatable(a, q) }
+
+NextEnabled ==
+    \/ StartableApps # {}
+    \/ StoppableApps # {}
+    \/ SubscribeableApps # {}
+    \/ ReleasableApps # {}
+    \/ ActivatableApps # {}
+
+\* With RandomElement to avoid non-determinism, but distribution favours low state spaces
+\* TODO: Investigate why
+
+NonDeterministicStart ==
+    /\ StartableApps # {}
+    /\ Start(RandomElement(StartableApps))
+
+NonDeterministicStop ==
+    /\ StoppableApps # {}
+    /\ Stop(RandomElement(StoppableApps))
+       
+NonDeterministicSubscribe ==
+    /\ SubscribeableApps # {}
+    /\ LET a == RandomElement(SubscribeableApps)
+       IN SubscribeToOneQueue(a, RandomElement(SubscribeableQueues(a)))
+
+NonDeterministicRelease ==
+    /\ ReleasableApps # {}
+    /\ LET a == RandomElement(ReleasableApps)
+       IN Release(a, RandomElement(ReleasableQueues(a)))
+
+NonDeterministicMakeActive ==
+    /\ ActivatableApps # {}
+    /\ LET a == RandomElement(ActivatableApps)
+       IN MakeActive(a, RandomElement(ActivatableQueues(a)))
+
 RandomNext ==
-    LET a == RandomElement(app)
-    IN
+    \/ NonDeterministicStart
+    \/ NonDeterministicStop
+    \/ NonDeterministicSubscribe
+    \/ NonDeterministicRelease
+    \/ NonDeterministicMakeActive
+
+\* The original - works but is VERY slow for large state spaces due to non-determinism
+(*
+RandomNext ==
+    \E a \in app :
         \/ Start(a)
         \/ Stop(a)
-        \/ LET q == RandomElement(queue)
-           IN 
-                \/ SubscribeToOneQueue(a, q)
-                \/ Release(a, q)
-                \/ MakeActive(a, q)
+        \/ \E q \in queue :
+            \/ SubscribeToOneQueue(a, q)
+            \/ Release(a, q)
+            \/ MakeActive(a, q)
+*)            
+
+  
 
 SequentialNext ==
     \E a \in app :
@@ -202,18 +286,21 @@ IsBalanced ==
 \* True when every application has a consumer on every queue
 \* (either as the active consumer or in the queue's subscriber queue)
 AllAppsSubscribedOnAllQueues ==
-    \A a \in app : 
-        \A q \in queue : 
+    /\ \A a \in app : 
+        \E q \in queue : 
             \/ active[q] = a 
-            \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
+            \/ /\ subscriber_queue[q] # <<>>
+               /\ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
     
 RandomPostCondition == 
-    IF (~ ENABLED RandomNext) THEN
-        /\ AllAppsSubscribedOnAllQueues
-        /\ IsBalanced
-        /\ \A q \in queue :
-            /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
-        /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+    IF (~ ENABLED NextEnabled) THEN
+        IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
+            /\ \A q \in queue :
+                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE)
+        ELSE
+            /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(app)) \o "," \o ToString(Cardinality(queue)), TRUE) \* this should never be printed
+            /\ FALSE
     ELSE
         id \in Nat
 
@@ -240,9 +327,12 @@ TypeOK ==
 (* Specs                                                                    *)
 (***************************************************************************)
 
+\* For gathering stats of random subscribe ordering
 RandomSpec == Init /\ [][RandomNext]_vars /\ WF_vars(RandomNext) /\ []RandomPostCondition
+
+\* For gathering stats of sequential subscribe ordering
 SequentialSpec == Init /\ [][SequentialNext]_vars /\ WF_vars(SequentialNext)/\ []SequentialPostCondition
 
 =============================================================================
 \* Modification History
-\* Last modified Mon Jul 27 11:24:29 CEST 2020 by GUNMETAL
+\* Last modified Tue Jul 28 09:22:23 CEST 2020 by GUNMETAL
