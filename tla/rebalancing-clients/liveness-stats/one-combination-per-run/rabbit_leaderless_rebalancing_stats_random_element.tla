@@ -47,7 +47,7 @@ Start(a) ==
 
 Stoppable(a) ==
     /\ app_id[a] # 0
-    /\ id < Cardinality(A) + RESTART_LIMIT
+    /\ id <= Cardinality(A) + RESTART_LIMIT
 
 Stop(a) ==
     \* enabling conditions
@@ -64,6 +64,7 @@ AppInSubscribeQueue(a, q) ==
 \* If an app is not subscribed to a queue, then subscribe
 \* This action is used when we want to verify with random subscribe ordering
 Subscribeable(a, q) ==
+    /\ app_id[a] # 0
     /\ \/ subscriber_queue[q] = <<>>
        \/ ~\E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
     /\ active[q] # a
@@ -139,6 +140,7 @@ IdealNumber(a) ==
 
 \* Releases one queue if it has too many active consumers
 Releasable(a, q) ==
+    /\ app_id[a] # 0
     /\ active[q] = a
     /\ AppActiveCount(a) > IdealNumber(a) 
 
@@ -157,7 +159,8 @@ Release(a, q) ==
 
 \* The SAC queue assigns active status to the next consumer in the subscriber queue
 Activatable(a, q) ==
-    /\ Cardinality(DOMAIN subscriber_queue[q]) > 0 
+    /\ app_id[a] # 0
+    /\ subscriber_queue[q] # <<>>
     /\ Head(subscriber_queue[q]) = a
     /\ active[q] = 0
 
@@ -202,63 +205,76 @@ NextEnabled ==
 
 \* With RandomElement to avoid non-determinism, but distribution favours low state spaces
 \* TODO: Investigate why
-(*
-NonDeterministicStart ==
+
+RandomElementStart ==
     LET apps == StartableApps
     IN 
         /\ apps # {}
         /\ Start(RandomElement(apps))
 
-NonDeterministicStop ==
+RandomElementStop ==
     LET apps == StoppableApps
     IN 
         /\ apps # {}
         /\ Stop(RandomElement(apps))
        
-NonDeterministicSubscribe ==
+RandomElementSubscribe ==
     LET apps == SubscribeableApps
     IN 
         /\ apps # {}
         /\ LET a == RandomElement(apps)
            IN SubscribeToOneQueue(a, RandomElement(SubscribeableQueues(a)))
 
-NonDeterministicRelease ==
+RandomElementSubscribeToAll ==
+    LET apps == SubscribeableApps
+    IN 
+        /\ apps # {}
+        /\ LET a == RandomElement(apps)
+           IN SubscribeToAllQueues(a)           
+
+RandomElementRelease ==
     LET apps == ReleasableApps
     IN 
         /\ apps # {}
         /\ LET a == RandomElement(apps)
            IN Release(a, RandomElement(ReleasableQueues(a)))
 
-NonDeterministicMakeActive ==
+RandomElementMakeActive ==
     LET apps == ActivatableApps
     IN 
         /\ apps # {}
         /\ LET a == RandomElement(apps)
            IN MakeActive(a, RandomElement(ActivatableQueues(a)))
-*)
 
-NonDeterministicStart ==
+(*
+RandomElementStart ==
     /\ StartableApps # {}
     /\ Start(RandomElement(StartableApps))
 
-NonDeterministicStop ==
+RandomElementStop ==
     /\ StoppableApps # {}
     /\ Stop(RandomElement(StoppableApps))
        
-NonDeterministicSubscribe ==
+RandomElementSubscribe ==
     /\ SubscribeableApps # {}
     /\ LET a == RandomElement(SubscribeableApps)
        IN SubscribeToOneQueue(a, RandomElement(SubscribeableQueues(a)))
 
-NonDeterministicRelease ==
+RandomElementSubscribeToAll ==
+    /\ SubscribeableApps # {}
+    /\ LET a == RandomElement(SubscribeableApps)
+       IN SubscribeToAllQueues(a)
+
+RandomElementRelease ==
     /\ ReleasableApps # {}
     /\ LET a == RandomElement(ReleasableApps)
        IN Release(a, RandomElement(ReleasableQueues(a)))
 
-NonDeterministicMakeActive ==
+RandomElementMakeActive ==
     /\ ActivatableApps # {}
     /\ LET a == RandomElement(ActivatableApps)
        IN MakeActive(a, RandomElement(ActivatableQueues(a)))
+*)
 
 \* True when every application has a consumer on every queue
 \* (either as the active consumer or in the queue's subscriber queue)
@@ -270,12 +286,20 @@ AllAppsSubscribedOnAllQueues ==
                /\ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
 
 RandomNext ==
-    \/ NonDeterministicStart
-    \/ NonDeterministicStop
-    \/ NonDeterministicSubscribe
+    \/ RandomElementStart
+    \/ RandomElementStop
+    \/ RandomElementSubscribe
     \/ /\ AllAppsSubscribedOnAllQueues
-       /\ \/ NonDeterministicRelease
-          \/ NonDeterministicMakeActive
+       /\ \/ RandomElementRelease
+          \/ RandomElementMakeActive
+
+SequentialNext ==
+    \/ RandomElementStart
+    \/ RandomElementStop
+    \/ RandomElementSubscribeToAll
+    \/ /\ AllAppsSubscribedOnAllQueues
+       /\ \/ RandomElementRelease
+          \/ RandomElementMakeActive
 
 \* The original - works but is VERY slow for large state spaces due to non-determinism
 (*
@@ -287,7 +311,6 @@ RandomNext ==
         \/ /\ AllAppsSubscribedOnAllQueues
            /\ \/ Release(a, q)
               \/ MakeActive(a, q)
-*)
 
 SequentialNext ==
     \E a \in A :
@@ -297,7 +320,7 @@ SequentialNext ==
         \/ \E q \in Q :
             \/ Release(a, q)
             \/ MakeActive(a, q)
-        
+*)        
 
 (***************************************************************************)
 (* Invariants                                                              *)
@@ -350,7 +373,7 @@ TypeOK ==
 (* Specs                                                                    *)
 (***************************************************************************)
 
-RandomSpec == Init /\ [][RandomNext]_vars /\ WF_vars(RandomNext) /\ []RandomPostCondition
+RandomSpec == Init /\ [][RandomNext]_vars /\ WF_vars(RandomNext)
 SequentialSpec == Init /\ [][SequentialNext]_vars /\ WF_vars(SequentialNext)/\ []SequentialPostCondition
 
 =============================================================================

@@ -2,6 +2,7 @@
 
 import argparse, sys, os, subprocess
 from pathlib import Path
+import time
 
 def generate_config(cfg_template_file, queue_count, app_count):
     # create a temporary cfg file with the desired queues and apps
@@ -64,11 +65,16 @@ if args.all_perms.upper() == "TRUE":
         for app_count in range(1, max_apps + 1):
             
             generate_config(args.config, queue_count, app_count)
+            start_time = time.time()
             exit_code = subprocess.call(["bash", "simulate.sh", args.spec, 
                             "spec.cfg",
                             args.behaviours,
                             f"results/{args.output_dir}/{queue_count}q_{app_count}a.log",
                             args.workers], cwd=".")
+            
+            elapsed_time = time.time() - start_time
+            print(f"Took: {elapsed_time} seconds")
+            
             if exit_code != 0:
                 print("Simulation failed")
                 exit(1)
@@ -76,11 +82,16 @@ else:
     queue_count = int(args.queues)
     app_count = int(args.apps)
     generate_config(args.config, queue_count, app_count)
+
+    start_time = time.time()
     exit_code = subprocess.call(["bash", "simulate.sh", args.spec, 
                     "spec.cfg",
                     args.behaviours,
                     f"results/{args.output_dir}/{queue_count}q_{app_count}a.log",
                     args.workers], cwd=".")
+    elapsed_time = time.time() - start_time
+    print(f"Took: {elapsed_time} seconds")
+
     if exit_code != 0:
         print("Simulation failed")
         exit(1)

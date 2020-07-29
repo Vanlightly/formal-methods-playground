@@ -46,10 +46,12 @@ parser.add_argument('--ordering', help='random or sequential')
 
 args=parser.parse_args()
 
+random_start = args.ordering.upper() == "RANDOM"
+
 total_releases = dict()
 per_queue_releases = dict()
 
-result_files = [f for f in listdir(args.results_dir) if isfile(join(args.results_dir, f))]
+result_files = [join(args.results_dir, f) for f in listdir(args.results_dir) if isfile(join(args.results_dir, f))]
 
 for result_file in result_files:
     fd = open(result_file, 'r') 
