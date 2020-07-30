@@ -90,7 +90,7 @@ else:
                     f"results/{args.output_dir}/{queue_count}q_{app_count}a.log",
                     args.workers], cwd=".")
     elapsed_time = time.time() - start_time
-    print(f"Took: {elapsed_time} seconds")
+    print(f"Took: {int(elapsed_time)} seconds")
 
     if exit_code != 0:
         print("Simulation failed")

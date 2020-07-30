@@ -42,11 +42,8 @@ def add_metric(metric_dict, match):
 parser=argparse.ArgumentParser()
 
 parser.add_argument('--results_dir', help='The directory which contains the tlc output files')
-parser.add_argument('--ordering', help='random or sequential')
 
 args=parser.parse_args()
-
-random_start = args.ordering.upper() == "RANDOM"
 
 total_releases = dict()
 per_queue_releases = dict()
@@ -66,7 +63,7 @@ for result_file in result_files:
         elif per_queue_match:
             add_metric(per_queue_releases, per_queue_match)
 
-print("AppCount,QueueCount,RandomStart,Behaviours,MinTotal,50thTotal,75thTotal,95thTotal,99thTotal,MaxTotal,MinPerQueue,50thPerQueue,75thPerQueue,95thPerQueue,99thPerQueue,MaxPerQueue")
+print("AppCount,QueueCount,Behaviours,MinTotal,50thTotal,75thTotal,95thTotal,99thTotal,MaxTotal,MinPerQueue,50thPerQueue,75thPerQueue,95thPerQueue,99thPerQueue,MaxPerQueue")
 for key in total_releases.keys():    
     app_count = int(key.split(":")[0])
     queue_count = int(key.split(":")[1])
@@ -89,4 +86,4 @@ for key in total_releases.keys():
     per_queue_releases_min = min(per_queue_releases_of_key)
     per_queue_releases_max = max(per_queue_releases_of_key)
 
-    print(f"{app_count},{queue_count},{random_start},{len(total_releases_of_key)},{total_releases_min},{total_releases_50th},{total_releases_75th},{total_releases_95th},{total_releases_99th},{total_releases_max},{per_queue_releases_min},{per_queue_releases_50th},{per_queue_releases_75th},{per_queue_releases_95th},{per_queue_releases_99th},{per_queue_releases_max}")
+    print(f"{app_count},{queue_count},{len(total_releases_of_key)},{total_releases_min},{total_releases_50th},{total_releases_75th},{total_releases_95th},{total_releases_99th},{total_releases_max},{per_queue_releases_min},{per_queue_releases_50th},{per_queue_releases_75th},{per_queue_releases_95th},{per_queue_releases_99th},{per_queue_releases_max}")
