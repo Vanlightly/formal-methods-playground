@@ -1,57 +1,53 @@
-------------------- MODULE rabbit_leaderless_rebalancing_stats -------------------
-EXTENDS TLC, Sequences, Integers, FiniteSets, Naturals
+------------------- MODULE rebalancing_client_stats_as_tlcgetset -------------------
+EXTENDS TLC, TLCExt, Sequences, Integers, FiniteSets, Naturals
 
-CONSTANTS Q,                  \* set of all queues
-          A,                  \* set of all apps
-          RESTART_LIMIT
+CONSTANTS Q, \* set of all queues
+          A  \* set of all apps
+
+ASSUME A \in SUBSET Nat
+ASSUME Q \in SUBSET Nat
 
 VARIABLES subscriber_queue,   \* the First Subscribe, First Active ordering of each queue
-          active,             \* the active consumer of each queue
-          app_id,             \* the id of each app, required for determinism in releases
-          id,                 \* for assigning each id
-          \* statistics data
-          per_queue_releases, \* number of releases per queue counter
-          total_releases      \* total number of releases
+          active              \* the active consumer of each queue
 
-vars == << subscriber_queue, active, app_id, id, per_queue_releases, total_releases >>
+vars == << subscriber_queue, active >>
+
+\* the counter ids
+per_queue_releases(q) == 1000 + q
+per_app_releases(a) == 100000 + a
+per_app_checks(a) == 10000000 + a
+total_releases == 0
+
 
 (***************************************************************************)
 (* Initial states                                                          *) 
 (***************************************************************************)
 
+ResetCounters ==
+    /\ \A a \in A : TLCSet(per_app_releases(a), 0) /\ TLCSet(per_app_checks(a), 0)
+    /\ \A q \in Q : TLCSet(per_queue_releases(q), 0)
+    /\ TLCSet(total_releases, 0)
+
 Init ==
     /\ subscriber_queue = [q \in Q |-> <<>>]
     /\ active = [q \in Q |-> 0]
-    /\ app_id = [a \in A |-> 0]
-    /\ id = 1
-    /\ per_queue_releases = [q \in Q |-> 0]
-    /\ total_releases = 0
+    /\ ResetCounters
 
 (***************************************************************************)
 (* Actions and state formulae                                              *) 
 (***************************************************************************)
+
+AppHasSubscriptions(a) ==
+    \E q \in Q : 
+        \/ active[q] = a 
+        \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
     
-StartedApps ==
-    { a \in A : app_id[a] # 0 }
-
-\* A stopped app_id starts and is assigned an id
-Start(a) ==
-    \* enabling conditions 
-    /\ app_id[a] = 0
-    \* actions
-    /\ app_id' = [app_id EXCEPT ![a] = id]
-    /\ id' = id + 1
-    /\ UNCHANGED << subscriber_queue, active, per_queue_releases, total_releases >>
-
 Stop(a) ==
     \* enabling conditions
-    /\ app_id[a] # 0
-    /\ id <= Cardinality(A) + RESTART_LIMIT
+    /\ AppHasSubscriptions(a)
     \* actions
     /\ subscriber_queue' = [q \in Q |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
     /\ active' = [q \in Q |-> IF active[q] = a THEN 0 ELSE active[q]] 
-    /\ app_id' = [app_id EXCEPT ![a] = 0]
-    /\ UNCHANGED << id, per_queue_releases, total_releases >>
 
 AppInSubscribeQueue(a, q) ==
     \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
@@ -64,7 +60,7 @@ SubscribeToOneQueue(a, q) ==
     /\ active[q] # a
     \* actions
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = Append(@, a)]
-    /\ UNCHANGED << active, app_id, id, per_queue_releases, total_releases >>
+    /\ UNCHANGED << active >>
 
 \* An app that is not subscribed on one or more queues, subscribes to all those queues it is missing
 \* This action is used when we want to verify with sequential subscribe ordering    
@@ -79,7 +75,7 @@ SubscribeToAllQueues(a) ==
                 Append(subscriber_queue[q], a)
             ELSE
                 subscriber_queue[q]]
-    /\ UNCHANGED << active, app_id, id, per_queue_releases, total_releases >>
+    /\ UNCHANGED << active >>
 
 \* The number of active consumers the application (a) has
 AppActiveCount(a) ==
@@ -92,7 +88,7 @@ Position(a) ==
     IF AppActiveCount(a) = 0 THEN -1
     ELSE
         Cardinality({ 
-            a1 \in StartedApps :
+            a1 \in A :
                 LET a_active == AppActiveCount(a)
                     a1_active == AppActiveCount(a1)
                 IN
@@ -100,16 +96,12 @@ Position(a) ==
                     /\ a1_active > 0
                     /\ \/ a1_active >= a_active
                        \/ /\ a1_active = a_active
-                          /\ app_id[a] < app_id[a1]
+                          /\ a < a1
                 
         })
 
 SubscribedApplications ==
-    { a \in A : 
-        \E q \in Q : 
-            \/ active[q] = a 
-            \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
-    }
+    { a \in A : AppHasSubscriptions(a) }
 
 \* Calculates the ideal number of active consumers this application should have
 IdealNumber(a) ==
@@ -130,31 +122,55 @@ IdealNumber(a) ==
                         ideal 
 
 \* Releases one queue if it has too many active consumers
-Release(a, q) ==
-    \* enabling conditions 
-    /\ active[q] = a
-    /\ AppActiveCount(a) > IdealNumber(a) 
-    \* actions
-    /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
-    /\ per_queue_releases' = [per_queue_releases EXCEPT ![q] = @ + 1]
-    /\ total_releases' = total_releases + 1
-    /\ \/ /\ active[q] = a
-          /\ active' = [active EXCEPT ![q] = 0]
-       \/ /\ active[q] # a
-          /\ UNCHANGED active
-    /\ UNCHANGED << app_id, id >>
+IncrementMetrics(a, queues, release_count) ==
+    /\ \A q \in queues : TLCSet(per_queue_releases(q), TLCGet(per_queue_releases(q)) + release_count)
+    /\ TLCSet(per_app_releases(a), TLCGet(per_app_releases(a)) + release_count)
+    /\ TLCSet(per_app_checks(a), TLCGet(per_app_checks(a)) + 1)
+    /\ TLCSet(total_releases, TLCGet(total_releases) + release_count)
+
+ReleaseQueues(a) ==
+    LET release_count == AppActiveCount(a) - IdealNumber(a) 
+    IN
+        \* enabling conditions 
+        /\ release_count > 0
+        \* actions 
+        /\ LET release_queues == CHOOSE s \in SUBSET { q \in Q : active[q] = a } : Cardinality(s) = release_count
+           IN
+            /\ subscriber_queue' = [q \in Q |->
+                                        IF q \in release_queues 
+                                        THEN SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)
+                                        ELSE subscriber_queue[q]]
+            /\ TLCDefer(IncrementMetrics(a, release_queues, release_count))
+            /\ active' = [q \in Q |-> IF q \in release_queues THEN 0 ELSE active[q]]          
 
 \* The SAC queue assigns active status to the next consumer in the subscriber queue
 MakeActive(a, q) ==
     \* enabling conditions 
-    /\ Cardinality(DOMAIN subscriber_queue[q]) > 0 
+    /\ subscriber_queue[q] # <<>>
     /\ Head(subscriber_queue[q]) = a
     /\ active[q] = 0
     \* actions
     /\ active' = [active EXCEPT ![q] = a]
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
-    /\ UNCHANGED << app_id, id, per_queue_releases, total_releases >>
 
+RandomNext ==
+    \E a \in A :
+        \/ ReleaseQueues(a)
+        \/ \E q \in Q :
+            \/ SubscribeToOneQueue(a, q)
+            \/ MakeActive(a, q)
+
+SequentialNext ==
+    \E a \in A :
+        \/ Stop(a)
+        \/ ReleaseQueues(a)
+        \/ SubscribeToAllQueues(a)
+        \/ \E q \in Q :
+            \/ MakeActive(a, q)
+        
+(***************************************************************************)
+(* Invariants                                                              *)
+(***************************************************************************)
 
 \* True when every application has a consumer on every queue
 \* (either as the active consumer or in the queue's subscriber queue)
@@ -164,29 +180,6 @@ AllAppsSubscribedOnAllQueues ==
             \/ active[q] = a 
             \/ \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
 
-RandomNext ==
-    \E a \in A :
-        \/ Start(a)
-        \/ Stop(a)
-        \/ \E q \in Q :
-            \/ SubscribeToOneQueue(a, q)
-            \/ /\ AllAppsSubscribedOnAllQueues
-               /\ \/ Release(a, q)
-                  \/ MakeActive(a, q)
-
-SequentialNext ==
-    \E a \in A :
-        \/ Start(a)
-        \/ Stop(a)
-        \/ SubscribeToAllQueues(a)
-        \/ \E q \in Q :
-            /\ AllAppsSubscribedOnAllQueues
-            /\ \/ Release(a, q)
-               \/ MakeActive(a, q)
-        
-(***************************************************************************)
-(* Invariants                                                              *)
-(***************************************************************************)
 
 \* True when:
 \* - every queue has an active consumer
@@ -196,31 +189,37 @@ SequentialNext ==
 IsBalanced ==
     /\ \A q \in Q : active[q] # 0
     /\ \A a1, a2 \in A : 
-        /\ app_id[a1] # 0
-        /\ app_id[a2] # 0
+        /\ AppHasSubscriptions(a1)
+        /\ AppHasSubscriptions(a2)
         /\ AppActiveCount(a1) - AppActiveCount(a2) \in { -1, 0, 1}
-    
+
+PrintStats ==
+    /\ \A q \in Q :
+        /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+    /\ \A a \in A :
+        /\ Print("per_app_releases," \o ToString(per_app_releases[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_app_check_cycles," \o ToString(per_app_check_cycles[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+    /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+
 RandomPostCondition == 
     IF (~ ENABLED RandomNext) THEN
         IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
-            /\ \A q \in Q :
-                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+            /\ PrintStats
+            /\ ResetCounters
         ELSE
             /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
-        id \in Nat
+        total_releases \in Nat
 
 SequentialPostCondition == 
     IF (~ ENABLED SequentialNext) THEN
         IF AllAppsSubscribedOnAllQueues /\ IsBalanced THEN
-            /\ \A q \in Q :
-                /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-            /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+            /\ PrintStats
+            /\ ResetCounters
         ELSE
             /\ Print("Terminated without balance" \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), FALSE) \* this should never be printed
     ELSE
-        id \in Nat
+        total_releases \in Nat
 
 AppOrNone ==
     A \union { 0 }
@@ -228,16 +227,15 @@ AppOrNone ==
 TypeOK ==
     /\ subscriber_queue \in [Q -> Seq(A)]
     /\ active \in [Q -> AppOrNone]
-    /\ app_id \in [A -> Nat]
-    /\ id \in Nat
 
 (***************************************************************************)
 (* Specs                                                                    *)
 (***************************************************************************)
 
-RandomSpec == Init /\ [][RandomNext]_vars /\ WF_vars(RandomNext) /\ []RandomPostCondition
-SequentialSpec == Init /\ [][SequentialNext]_vars /\ WF_vars(SequentialNext)/\ []SequentialPostCondition
+RandomSpec == Init /\ [][RandomNext]_vars /\ WF_vars(RandomNext) 
+SequentialSpec == Init /\ [][SequentialNext]_vars /\ WF_vars(SequentialNext)
 
 =============================================================================
 \* Modification History
+\* Last modified Tue Aug 11 07:08:20 PDT 2020 by jack
 \* Last modified Mon Jul 27 11:24:29 CEST 2020 by GUNMETAL

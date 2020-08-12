@@ -44,13 +44,15 @@ do
     echo InstanceID=$RUNNING
 done
 
-sleep 30
+sleep 60
 
 INSTANCE_IP=$(aws ec2 describe-instances --filters "Name=tag:inventorygroup,Values=$TAG" "Name=instance-state-name,Values=running" --query "Reservations[*].Instances[*].PublicIpAddress" --output=text)
 
 scp -i "~/.ssh/${KEY_PAIR}.pem" "install.sh" ubuntu@$INSTANCE_IP:.
 scp -i "~/.ssh/${KEY_PAIR}.pem" "../simulate.sh" ubuntu@$INSTANCE_IP:.
+scp -i "~/.ssh/${KEY_PAIR}.pem" "../simulate-stats-nightly.sh" ubuntu@$INSTANCE_IP:.
 scp -i "~/.ssh/${KEY_PAIR}.pem" "../simulate.py" ubuntu@$INSTANCE_IP:.
 scp -i "~/.ssh/${KEY_PAIR}.pem" "../calculate_stats.py" ubuntu@$INSTANCE_IP:.
 
+echo "IP=$INSTANCE_IP"
 ssh -i "~/.ssh/${KEY_PAIR}.pem" ubuntu@$INSTANCE_IP bash install.sh

@@ -6,20 +6,23 @@ BEHAVIOURS=$3
 OUTPUT=$4
 WORKERS=$5
 
-trap kill_tlc INT
+trap terminate INT
 
-function kill_tlc() {
-    #kill $PID
-    #echo "Stopped simulation with pid $PID"
+function ensure_no_tlc() {
+    COUNT=$(ps aux | grep -v grep | grep tlc2 | wc -l)
+    if (( $COUNT > 0 )) ; then
+        kill $(ps aux | grep tlc2 | grep -v grep | awk '{ print $2 }')
+    fi
+}
 
-    pkill -f tlc
+function terminate() {
+    ensure_no_tlc
     exit 0
 }
 
-#echo "Running simulation for up to $BEHAVIOURS behaviours"
-pkill -f tlc
+ensure_no_tlc
 
-tlc -simulate $SPEC -deadlock -workers $5 -depth 100000 -config $CONFIG -maxSetSize 10000000 > "$OUTPUT" 2>&1 &
+tlc-nightly -simulate $SPEC -deadlock -workers $5 -depth 100000 -config $CONFIG -maxSetSize 10000000 > "$OUTPUT" 2>&1 &
 PID=$!
 
 echo "Simulation outputting to $OUTPUT, with pid=$PID"
@@ -27,11 +30,12 @@ echo "Simulation outputting to $OUTPUT, with pid=$PID"
 LAST_PRINTED=$(date +%s)
 while sleep 1
 do
-    ERRORS=$(grep -c Exception "$OUTPUT")
-    if [[ $BEHAVIOURS_COMPUTED -ge $BEHAVIOURS ]]
+    ERRORS=$(grep Exception $OUTPUT | grep -v throws | wc -l)
+    if (( $ERRORS > 0 ))
     then
         echo "Error detected, stopping. Computed $BEHAVIOURS_COMPUTED behaviours."
-        pkill -f tlc
+        ensure_no_tlc
+        sleep 1
         exit 1
     fi
 
@@ -39,10 +43,8 @@ do
     if [[ $BEHAVIOURS_COMPUTED -ge $BEHAVIOURS ]]
     then
         echo "Computed $BEHAVIOURS_COMPUTED behaviours"
-        #kill $PID
-        #echo "Stopped simulation with pid $PID"
-        pkill -f tlc
-
+        ensure_no_tlc
+        sleep 1
         exit 0
     fi
 

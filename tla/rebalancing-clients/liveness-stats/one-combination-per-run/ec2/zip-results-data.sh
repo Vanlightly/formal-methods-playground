@@ -17,7 +17,6 @@ done
 INSTANCE_IP=$(aws ec2 describe-instances --filters "Name=tag:inventorygroup,Values=$TAG" --query "Reservations[*].Instances[*].PublicIpAddress" --output=text)
 
 ssh -i "~/.ssh/${KEY_PAIR}.pem" ubuntu@$INSTANCE_IP tar -zcvf results.tar.gz results/$OUTPUT_DIR
-scp -i "~/.ssh/${KEY_PAIR}.pem" ubuntu@$INSTANCE_IP:results.tar.gz ./results.tar.gz
-ssh -i "~/.ssh/${KEY_PAIR}.pem" ubuntu@$INSTANCE_IP python3 calculate_stats.py --results_dir results/$OUTPUT_DIR > ${OUTPUT_DIR}.csv
+scp -i "~/.ssh/${KEY_PAIR}.pem" ubuntu@$INSTANCE_IP:results.tar.gz ./results-${OUTPUT_DIR}.tar.gz
 
-echo "Results in ${OUTPUT_DIR}.csv"
+echo "Results in results-$OUTPUT_DIR.tar.gz"

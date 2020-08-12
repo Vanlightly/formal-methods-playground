@@ -15,5 +15,6 @@ bash run-on-ec2.sh \
 -q 20 \
 -a 1.5 \
 -b 1000 \
--s ../rabbit_leaderless_rebalancing_stats.tla \
--c ../random_template.cfg
+-s ../rebalancing_client_stats_as_vars.tla \
+-c ../random_template.cfg \
+-S simulate.sh
