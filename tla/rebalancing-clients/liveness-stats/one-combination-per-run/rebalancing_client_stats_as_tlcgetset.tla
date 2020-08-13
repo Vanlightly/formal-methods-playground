@@ -123,7 +123,7 @@ IdealNumber(a) ==
 
 \* Releases one queue if it has too many active consumers
 IncrementMetrics(a, queues, release_count) ==
-    /\ \A q \in queues : TLCSet(per_queue_releases(q), TLCGet(per_queue_releases(q)) + release_count)
+    /\ \A q \in queues : TLCSet(per_queue_releases(q), TLCGet(per_queue_releases(q)) + 1)
     /\ TLCSet(per_app_releases(a), TLCGet(per_app_releases(a)) + release_count)
     /\ TLCSet(per_app_checks(a), TLCGet(per_app_checks(a)) + 1)
     /\ TLCSet(total_releases, TLCGet(total_releases) + release_count)
@@ -195,11 +195,11 @@ IsBalanced ==
 
 PrintStats ==
     /\ \A q \in Q :
-        /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_queue_releases," \o ToString(q) \o "," \o ToString(TLCGet(per_queue_releases(q))) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
     /\ \A a \in A :
-        /\ Print("per_app_releases," \o ToString(per_app_releases[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-        /\ Print("per_app_check_cycles," \o ToString(per_app_check_cycles[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-    /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_app_releases," \o ToString(a) \o "," \o ToString(TLCGet(per_app_releases(a))) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_app_checks," \o ToString(a) \o "," \o ToString(TLCGet(per_app_checks(a))) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+    /\ Print("total_releases," \o ToString(TLCGet(total_releases)) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
 
 RandomPostCondition == 
     IF (~ ENABLED RandomNext) THEN

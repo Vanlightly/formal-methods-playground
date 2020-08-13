@@ -12,9 +12,9 @@ VARIABLES subscriber_queue,   \* the First Subscribe, First Active ordering of e
           per_queue_releases,  \* number of releases per queue 
           per_app_releases,    \* number of releases per queue 
           total_releases,      \* total number of releases
-          per_app_check_cycles \* number of check cycles per queue 
+          per_app_checks \* number of check cycles per queue 
 
-vars == << subscriber_queue, active, per_queue_releases, per_app_releases, total_releases, per_app_check_cycles >>
+vars == << subscriber_queue, active, per_queue_releases, per_app_releases, total_releases, per_app_checks >>
 
 (***************************************************************************)
 (* Initial states                                                          *) 
@@ -25,7 +25,7 @@ Init ==
     /\ active = [q \in Q |-> 0]
     /\ per_queue_releases = [q \in Q |-> 0]
     /\ per_app_releases = [a \in A |-> 0]
-    /\ per_app_check_cycles = [a \in A |-> 0]
+    /\ per_app_checks = [a \in A |-> 0]
     /\ total_releases = 0
 
 (***************************************************************************)
@@ -44,7 +44,7 @@ Stop(a) ==
     \* actions
     /\ subscriber_queue' = [q \in Q |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
     /\ active' = [q \in Q |-> IF active[q] = a THEN 0 ELSE active[q]] 
-    /\ UNCHANGED << per_queue_releases, per_app_releases, total_releases, per_app_check_cycles >>
+    /\ UNCHANGED << per_queue_releases, per_app_releases, total_releases, per_app_checks >>
 
 AppInSubscribeQueue(a, q) ==
     \E a1 \in DOMAIN subscriber_queue[q] : subscriber_queue[q][a1] = a
@@ -57,7 +57,7 @@ SubscribeToOneQueue(a, q) ==
     /\ active[q] # a
     \* actions
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = Append(@, a)]
-    /\ UNCHANGED << active, per_queue_releases, per_app_releases, total_releases, per_app_check_cycles >>
+    /\ UNCHANGED << active, per_queue_releases, per_app_releases, total_releases, per_app_checks >>
 
 \* An app that is not subscribed on one or more queues, subscribes to all those queues it is missing
 \* This action is used when we want to verify with sequential subscribe ordering    
@@ -72,7 +72,7 @@ SubscribeToAllQueues(a) ==
                 Append(subscriber_queue[q], a)
             ELSE
                 subscriber_queue[q]]
-    /\ UNCHANGED << active, per_queue_releases, per_app_releases, total_releases, per_app_check_cycles >>
+    /\ UNCHANGED << active, per_queue_releases, per_app_releases, total_releases, per_app_checks >>
 
 \* The number of active consumers the application (a) has
 AppActiveCount(a) ==
@@ -136,7 +136,7 @@ ReleaseQueues(a) ==
                                               THEN per_queue_releases[q] + 1
                                               ELSE per_queue_releases[q]]
             /\ per_app_releases' = [per_app_releases EXCEPT ![a] = @ + release_count]
-            /\ per_app_check_cycles' = [per_app_check_cycles EXCEPT ![a] = @ + 1]
+            /\ per_app_checks' = [per_app_checks EXCEPT ![a] = @ + 1]
             /\ total_releases' = total_releases + 1
             /\ active' = [q \in Q |-> IF q \in release_queues THEN 0 ELSE active[q]]
 
@@ -149,7 +149,7 @@ MakeActive(a, q) ==
     \* actions
     /\ active' = [active EXCEPT ![q] = a]
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
-    /\ UNCHANGED << per_queue_releases, per_app_releases, total_releases, per_app_check_cycles >>
+    /\ UNCHANGED << per_queue_releases, per_app_releases, total_releases, per_app_checks >>
 
 RandomNext ==
     \E a \in A :
@@ -192,10 +192,10 @@ IsBalanced ==
 
 PrintStats ==
     /\ \A q \in Q :
-        /\ Print("per_queue_releases," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_queue_releases," \o ToString(q) \o "," \o ToString(per_queue_releases[q]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
     /\ \A a \in A :
-        /\ Print("per_app_releases," \o ToString(per_app_releases[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
-        /\ Print("per_app_check_cycles," \o ToString(per_app_check_cycles[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_app_releases," \o ToString(a) \o ","\o ToString(per_app_releases[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
+        /\ Print("per_app_checks," \o ToString(a) \o ","\o ToString(per_app_checks[a]) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
     /\ Print("total_releases," \o ToString(total_releases) \o "," \o ToString(Cardinality(A)) \o "," \o ToString(Cardinality(Q)), TRUE)
 
 RandomPostCondition == 
