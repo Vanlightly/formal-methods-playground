@@ -48,12 +48,15 @@ CONSTANTS Member,                \* The set of possible members
           AckMessage,            \* Message type: ack
           DeadMemberCount,       \* The number of dead members the ensemble need to detect
           SuspectTimeout,        \* The number of failed probes before suspected node made dead
+          DisseminationLimit,    \* The lambda log n value (the maximum number of times a given update can be piggybacked)
           MaxUpdatesPerPiggyBack \* The maximum  number of state updates to be included in
                                  \* any given piggybacked gossip message
 
 \* The values of member states must be sequential
 ASSUME Alive > Suspect /\ Suspect > Dead
 ASSUME DeadMemberCount \in (Nat \ {0})
+ASSUME SuspectTimeout \in (Nat \ {0})
+ASSUME MaxUpdatesPerPiggyBack \in (Nat \ {0})
 
 
 VARIABLES incarnation,      \* Member incarnation numbers
@@ -78,13 +81,13 @@ InitMemberVars ==
         /\ members = [m \in Member |-> IF m \in dead_members 
                                        THEN [m1 \in Member |-> [incarnation |-> 0, state |-> Nil, suspect_timeout |-> SuspectTimeout]]
                                        ELSE [m1 \in Member |-> [incarnation |-> 1, state |-> Alive, suspect_timeout |-> SuspectTimeout]]]
-        /\ pending_req = [m \in Member |-> [m1 \in Member |-> [pending |-> FALSE, count |-> 0]]]
-        /\ updates = [m \in Member |-> {}]
+        /\ updates = [m \in Member |-> <<>>]
         /\ tick = [m \in Member |-> 0]
         /\ sim_complete = 0
 
 InitMessageVars ==
     /\ requests = [req \in {} |-> 0]
+    /\ pending_req = [m \in Member |-> [m1 \in Member |-> [pending |-> FALSE, count |-> 0]]]
     /\ responses_seen = {}
 
 ----
@@ -130,34 +133,6 @@ UntrackPending(source, dest) ==
     pending_req' = [pending_req EXCEPT ![source][dest] = 
                             [pending |-> FALSE, count |-> @.count]]
 
-(* HELPER Operators for updating member state *)
-
-\* Records an 'update' to be gossipped by the given 'member'
-RecordUpdate(member, new_update) ==
-    updates' = [updates EXCEPT ![member] = @ \union {new_update}]    
-    
-\* Replaces all updates of a member   
-SetUpdates(member, new_updates) == 
-    updates' = [updates EXCEPT ![member] = new_updates]
-
-\* Updates the state of a peer on the given 'source' node
-\* When the state of the 'dest' is updated, an update message is enqueued for gossip
-\* and the state change is recorded in the 'source' node's history for model checking.
-UpdateState(source, dest, inc, state, hops) ==
-    /\ members' = [members EXCEPT ![source][dest] = [incarnation     |-> inc, 
-                                                     state           |-> state,
-                                                     suspect_timeout |-> @.suspect_timeout]]
-    /\ RecordUpdate(source, [id          |-> dest, 
-                             incarnation |-> inc, 
-                             state       |-> state, 
-                             hops        |-> hops])
-    
-UpdateAsSuspect(source, dest, inc) ==
-    /\ members' = [members EXCEPT ![source][dest] = [incarnation |-> inc, 
-                                                     state       |-> Suspect,
-                                                     suspect_timeout |-> @.suspect_timeout - 1]]
-    /\ RecordUpdate(source, [id |-> dest, incarnation |-> inc, state |-> Suspect, hops |-> 0])
-
 (* HELPER Operators to determine if the ensemble has converged 
    on the real state of the system *)
 
@@ -193,31 +168,192 @@ WillBeConverged ==
                    /\ members'[m1][m2].state = RealStateOfMember(m2)
                    
 
-(* HELPER Operators for choosing which gossip to include with a probe or ack *)
+(************************************************************************) 
+(******************** OUTGOING GOSSIP ***********************************)
+(************************************************************************)
+
+(* NOTES
+Gossip is selected for piggybacking on probes and acks based on:
+1. The maximum number of times an item can be gossiped (lambda log n in the paper
+   but in this spec the constant DisseminationLimit.
+2. The maximum number of items that can be piggybacked on any given probe or ack.
+   In this spec the constant MaxUpdatesPerPiggyBack.
+3. In the case that all valid gossip does not fit, prioritise items that have been 
+   disseminated fewer times. All gossip is stored in a function gossip |-> dissemination counter
+*)
+
+GossipUnderLimit(m) ==
+    { update \in DOMAIN updates[m] : updates[m][update] < DisseminationLimit }
+    
+GossipOverLimit(m) ==
+    { update \in DOMAIN updates[m] : updates[m][update] >= DisseminationLimit } 
 
 \* Choose the gossip based on the MaxUpdatesPerGossip and when there is more
 \* gossip than can be accomodated in a single message, choose the gossip items
-\* in order of fewest hops first
-ChooseGossipToSend(m, candidate_gossip) ==
-    IF Cardinality(candidate_gossip) <= MaxUpdatesPerPiggyBack THEN
-        candidate_gossip
-    ELSE
-        CHOOSE update_subset \in SUBSET candidate_gossip :
-            /\ Cardinality(update_subset) = MaxUpdatesPerPiggyBack
-            /\ \A update \in update_subset :
-                \A u1 \in candidate_gossip : update.hops <= u1.hops 
+\* in order of fewest disseminations first
 
-\* Increment the hop field on each gossip item
-IncrementHop(gossip_to_send) ==
-    { [id          |-> u.id,
-       incarnation |-> u.incarnation,
-       state       |-> u.state,
-       hops        |-> u.hops + 1] : u \in gossip_to_send }
+Prioritise(m, candidate_gossip, limit) ==
+    CHOOSE update_subset \in SUBSET candidate_gossip :
+        /\ Cardinality(update_subset) = limit
+        /\ \A u1 \in update_subset :
+            \A u2 \in candidate_gossip :
+                updates[m][u1] <= updates[m][u2] 
 
-(* 
---------------------------------------------------
-OPERATOR - Probe
---------------------------------------------------
+SelectOutgoingGossip(m, new_gossip) ==
+    LET candidate_gossip == GossipUnderLimit(m)
+        limit == IF new_gossip = {} THEN MaxUpdatesPerPiggyBack ELSE MaxUpdatesPerPiggyBack - 1 
+    IN
+        IF Cardinality(candidate_gossip) <= limit 
+        THEN candidate_gossip \union new_gossip
+        ELSE 
+            LET prioritised_gossip == Prioritise(m, candidate_gossip, limit)
+            IN prioritised_gossip \union new_gossip
+            
+\* The gossip that is a candidate for being piggybacked on the ack
+\* This is the existing pending gossip + a new gossip
+\* The gossip received in the probe is not included
+RefuteSuspicionGossip(member, probe_state) ==
+    IF probe_state = Suspect
+    THEN { [id          |-> member, 
+            incarnation |-> incarnation'[member], 
+            state       |-> Alive] }
+    ELSE {}
+
+\* This gossip can also include a refutation of being Suspect. Not currently
+\* needed in this spec, but will be required if testing false positives later on.
+SelectOutgoingAckGossip(member, probe_state) ==
+    SelectOutgoingGossip(member, RefuteSuspicionGossip(member, probe_state))
+
+\* Increment the dissemination counter of each gossip item
+IncrementPiggybackCount(member, gossip_to_send) ==
+    updates' = [updates EXCEPT ![member] = [u \in DOMAIN updates[member] |->
+                                                IF u \in gossip_to_send 
+                                                THEN updates[member][u] +1
+                                                ELSE updates[member][u]]]
+
+(************************************************************************) 
+(******************** INCOMING GOSSIP ***********************************)
+(************************************************************************)
+
+(* NOTES
+
+Gossip can come in on probes and acks. Any incoming gossip is merged with existing gossip
+and any stale gossip is filtered out (compaction). 
+
+Stale gossip is that which has a lower incarnation number than the member has recorded for
+that target member or which has the same incarnation number, but a lower precedence state. The 
+precedence order is (highest to lowest) Dead, Suspect, Alive.
+
+The merged and compacted gossip is then applied to known information that the member has on
+all other members (the members variable).
+*)
+
+\* Returns TRUE or FALSE as to whether an individual gossip item is new for this member
+\* It is new only if:
+\* - its incarnation number is > than the known incarnation number of the target member
+\* - its incarnation number equals the known incarnation number of the target member but its state has higher precedence
+IsNewInformation(member, gossip) ==
+    \/ gossip.incarnation > members[member][gossip.id].incarnation
+    \/ /\ gossip.incarnation = members[member][gossip.id].incarnation
+       /\ gossip.state < members[member][gossip.id].state
+       
+\* Returns TRUE if the gossip matches currently known information or is new       
+IsCurrentOrNewInformation(member, gossip) ==
+    \/ gossip.incarnation >= members[member][gossip.id].incarnation
+    \/ /\ gossip.incarnation = members[member][gossip.id].incarnation
+       /\ gossip.state <= members[member][gossip.id].state       
+
+\* Merges incoming gossip with existing gossip and compacts it, removing any stale items
+\* 1. Merge the gossip with any existing gossip that the member has. The merged gossip may have
+\*    multiple items pertaining to a given member id.
+\* 2. Compact the merged gossip to remove stale items and so that even in the case 
+\*    that there are multiple items of a given id only the highest precedence one remains.
+MergeAndCompactGossip(member, gossip_items) ==
+    LET merged_gossip == DOMAIN updates[member] \union gossip_items
+    IN  { 
+            g1 \in merged_gossip :
+                /\ IsCurrentOrNewInformation(member, g1)
+                /\ ~\E g2 \in merged_gossip :
+                    /\ g1 # g2
+                    /\ g1.id = g2.id
+                    /\ \/ g2.incarnation > g1.incarnation
+                       \/ /\ g2.incarnation = g1.incarnation
+                          /\ g2.state < g1.state  
+         }
+
+\* Returns TRUE or FALSE as to whether the member has a gossip 
+MemberHasGossipItem(member, gossip_items) ==
+    \E g \in gossip_items : g.id = member
+
+\* Returns the gossip that concerns this member    
+GossipItemOfMember(member, gossip_items) ==
+    CHOOSE g \in gossip_items : g.id = member
+
+\* Saves the compacted gossip and increments the dissemination counter of any gossip that
+\* was sent out
+SaveGossip(member, compacted_updates, sent_updates) ==
+    updates' = [updates EXCEPT ![member] = 
+                    [u \in compacted_updates |->
+                        LET sent == u \in sent_updates
+                            new == u \notin DOMAIN updates[member]
+                        IN 
+                            IF sent /\ new THEN 1
+                            ELSE IF sent /\ ~new THEN updates[member][u] + 1
+                            ELSE IF ~sent /\ ~new THEN updates[member][u]
+                            ELSE 0]]
+
+\* Updates the state based on the compacted gossip (which contains only existing or new information)
+\* If its new information, update the state
+\* If the information already exists, then no change
+\* If there is no gossip about a member, then no change 
+UpdateMemberState(member, compacted_gossip) ==
+    members' = [members EXCEPT ![member] = 
+                    [m \in Member |-> 
+                          IF MemberHasGossipItem(m, compacted_gossip) 
+                          THEN LET gossip_item == GossipItemOfMember(m, compacted_gossip)
+                               IN IF IsNewInformation(member, gossip_item)
+                                  THEN [incarnation     |-> gossip_item.incarnation, 
+                                        state           |-> gossip_item.state,
+                                        suspect_timeout |-> SuspectTimeout] 
+                                  ELSE @[m]
+                          ELSE @[m]]]
+
+\* Merges and compacts gossip, then:
+\* - Updates the known information of other members based on the new gossip
+\* - Save the gossip (includes incrementing dissemination counters)
+HandleGossip(member, incoming_gossip, sent_gossip) ==
+    LET compacted_gossip == MergeAndCompactGossip(member, incoming_gossip)
+    IN
+        /\ UpdateMemberState(member, compacted_gossip)
+        /\ SaveGossip(member, compacted_gossip, sent_gossip)
+        /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
+
+\* Updates the state of a peer on the given 'source' node
+\* When the state of the 'dest' is updated, an update message is added to existing gossip
+UpdateState(source, dest, inc, state) ==
+    /\ members' = [members EXCEPT ![source][dest] = [incarnation     |-> inc, 
+                                                     state           |-> state,
+                                                     suspect_timeout |-> @.suspect_timeout]]
+    /\ SaveGossip(source, {[id          |-> dest, 
+                            incarnation |-> inc, 
+                            state       |-> state]}, {})
+
+\* Updates the state of a peer on the given 'source' node and decrements its suspect timeout counter.
+\* When the state of the 'dest' is updated, an update message is added to existing gossip    
+UpdateAsSuspect(source, dest, inc) ==
+    /\ members' = [members EXCEPT ![source][dest] = [incarnation |-> inc, 
+                                                     state       |-> Suspect,
+                                                     suspect_timeout |-> @.suspect_timeout - 1]]
+    /\ SaveGossip(source, {[id          |-> dest, 
+                           incarnation |-> inc, 
+                           state       |-> Suspect]}, {})
+
+
+(************************************************************************) 
+(******************** ACTION: PROBE *************************************)
+(************************************************************************)
+
+(* Notes
 
 Triggers a probe request to a peer
 * 'source' is the source of the probe
@@ -226,9 +362,12 @@ Triggers a probe request to a peer
 - Uses fair scheduling to ensure that each member more or less is sending out a similar number of probes
   and that each member is choosing other members to probe in a balanced but random fashion
 
-- Piggybacks any gossip that will fit, incrementing its hop counters
+- Piggybacks any gossip that will fit, incrementing its dissemination counters
 
-- Not enabled if convergence has been reached, ensuring deadlock will occur
+- In addtion to fair scheduling controlling whether enabled or not, will not be enabled if:
+   - convergence has been reached, ensuring deadlock will occur
+   - there are members to expire
+   - has no pending probes to the destination (probes either get an ack or fail)
 *)
 
 HasNoMembersToExpire(source) ==
@@ -261,94 +400,25 @@ Probe(source, dest) ==
     /\ HasNoMembersToExpire(source)     \* Only send a probe if we have no pending expiries
     /\ IsValidProbeTarget(source, dest) \* The dest is valid (not dead for example)
     /\ IsFairlyScheduled(source, dest)  \* We aim to make the rate probe sending more or less balanced
-    /\ LET gossip_to_send == IF updates[source] = {}
-                             THEN {}
-                             ELSE ChooseGossipToSend(source, updates[source])
+    /\ LET gossip_to_send == SelectOutgoingGossip(source, {})
        IN
         /\ SendRequest([type    |-> ProbeMessage,
                         source  |-> source,
                         dest    |-> dest,
                         tick    |-> tick[source],
                         payload |-> members[source][dest],
-                        gossip  |-> IF gossip_to_send = {} THEN {} 
-                                    ELSE IncrementHop(gossip_to_send)])
-        /\ updates' = [updates EXCEPT ![source] = @ \ gossip_to_send]
+                        gossip  |-> gossip_to_send])
+        /\ IncrementPiggybackCount(source, gossip_to_send)
         /\ TrackPending(source, dest)
         /\ UNCHANGED <<incarnation, members, tick, responses_seen, sim_complete >>
 
-(*
-GOSSIP HANDLING - USED WHEN RECEIVING A PROBE OR AN ACK
-Handles a gossip update
-* 'member' is the member that has received the gossip
-* 'incoming_gossip' is the destination handling the update
-* 'gossip' is the update message in the format with the updated member ID, incarnation, and state
 
-If the member is not present in the destination's members, add it to the members set.
-If the incarnation is greater than the destination's incarnation for the gossipped member,
-update the member's incarnation and state on the destination node and enqueue the change for
-gossip. If the incarnation is equal to the destination's incarnation for the member and the
-state is less than the destination's state for the member, update the member's state on the
-destination node and enqueue the change for gossip.
-MOD 1: This is now a sub-formula of ReceiveProbe and ReceiveAck
-MOD 2: No history variable
-MOD 3: Handles multiple gossip items in a single step
-*)
-
-\* Returns TRUE or FALSE as to whether an individual gossip item is valid
-\* It is valid only if:
-\* - its incarnation number is higher than the known incarnation number of the target member
-\* - its incarnation number equals the known incarnation number of the target member but its state has higher precedence
-HigherPredenceThanLocal(member, gossip) ==
-    \/ gossip.incarnation > members[member][gossip.id].incarnation
-    \/ /\ gossip.incarnation = members[member][gossip.id].incarnation
-       /\ gossip.state < members[member][gossip.id].state
-
-\* Filter the gossip items to the ones that are:
-\* 1. A valid state change for this member
-\* 2. In the case there are multiple states of a given id, take the highest precedence one
-FilterIncomingGossip(member, incoming_gossip) ==
-    LET valid_gossip == { g \in incoming_gossip : HigherPredenceThanLocal(member, g) }
-    IN
-        { 
-            g1 \in valid_gossip :
-                LET gossip_of_member == {g2 \in valid_gossip : g2.id = g1.id}
-                IN
-                    \/ Cardinality(gossip_of_member) = 1
-                    \/ \A g2 \in gossip_of_member :
-                        \/ g1.incarnation_number > g2.incarnation_number
-                        \/ /\ g1.incarnation_number = g2.incarnation_number
-                           /\ g1.state < g2.state 
-        }
-
-\* Returns TRUE or FALSE as to whether the member has a gossip 
-MemberHasGossipItem(member, gossip_items) ==
-    \E g \in gossip_items : g.id = member
-
-\* Returns the gossip that concerns this member    
-GossipItemOfMember(member, gossip_items) ==
-    CHOOSE g \in gossip_items : g.id = member
-
-\* Filters the gossip down to only the valid gossip and only the highest precedence
-\* per member. Then:
-\* - Updates the known state of other members based on the new gossip
-\* - Adds this gossip to the pending items to be gossipped to other members
-HandleGossip(member, incoming_gossip) ==
-    LET filtered_gossip == FilterIncomingGossip(member, incoming_gossip)
-    IN
-        /\ members' = [members EXCEPT ![member] = 
-                        [m \in Member |-> IF MemberHasGossipItem(m, filtered_gossip) 
-                                          THEN LET new_state == GossipItemOfMember(m, filtered_gossip)
-                                               IN [incarnation     |-> new_state.incarnation, 
-                                                   state           |-> new_state.state,
-                                                   suspect_timeout |-> SuspectTimeout] \* TODO is this correct?
-                                          ELSE @[m]]]
-        /\ SetUpdates(member, filtered_gossip)
-        /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
         
-(*
---------------------------------------------------
-ACTION - ReceiveProbe
---------------------------------------------------
+(************************************************************************) 
+(******************** ACTION: ReceiveProbe ******************************)
+(************************************************************************)
+
+(* Notes
 
 Handles a probe message from a peer.
 
@@ -360,6 +430,7 @@ incarnation. If the destination's incarnation is greater than the source's incar
 send an ack.
 - Adds pending gossip (that will fit) to the ack (piggybacking)
 - Adds any incoming gossip that is valid, to the local updates to be gossiped later
+- May add gossip to refute being Suspect (not currently a possibility as false positives not modelled)
 *)
 
 \* Send an ack and piggyback gossip if any to send
@@ -369,52 +440,32 @@ SendAck(request, payload, piggyback_gossip) ==
                         dest      |-> request.source,
                         dest_tick |-> request.tick,
                         payload   |-> payload,
-                        gossip    |-> IF updates[request.source] = {} 
-                                      THEN {} 
-                                      ELSE IncrementHop(piggyback_gossip)])
-        
-\* TODO: we have "received" gossip which we need to store
-\*       we have "pending" and "generated" gossip that can be added to the ack
-\*       any left over that cannot fit in the ack must also be stored
-\* strategy = set to store, set to send
-
-\* The gossip that is a candidate for being piggybacked on the ack
-\* This is the existing pending gossip + a new gossip
-\* The gossip received in the probe is not included
-CandidateAckGossip(member, probe_state) ==
-    IF probe_state = Suspect
-    THEN updates[member] \union { [id          |-> member, 
-                                   incarnation |-> incarnation'[member], 
-                                   state       |-> Alive, 
-                                   hops        |-> 0] }
-    ELSE updates[member]
+                        gossip    |-> piggyback_gossip])
  
 ReceiveProbe ==
     \E r \in DOMAIN requests :
         /\ NotRepliedTo(r)
         /\ incarnation[r.dest] # Nil
-        /\ 
-           LET candidate_ack_gossip == CandidateAckGossip(r.dest, r.payload.state)
-           IN
-               LET gossip_to_send_in_ack == ChooseGossipToSend(r.dest, candidate_ack_gossip)
-                   gossip_to_store == r.gossip \union (candidate_ack_gossip \ gossip_to_send_in_ack)
-               IN 
-                    /\ \/ /\ r.payload.incarnation > incarnation[r.dest]
-                          /\ incarnation' = [incarnation EXCEPT ![r.dest] = r.payload.incarnation + 1]
-                          /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], gossip_to_send_in_ack)
-                       \/ /\ r.payload.state = Suspect
-                          /\ incarnation' = [incarnation EXCEPT ![r.dest] = incarnation[r.dest] + 1]
-                          /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], gossip_to_send_in_ack)
-                       \/ /\ r.payload.incarnation <= incarnation[r.dest]
-                          /\ SendAck(r, [incarnation |-> incarnation[r.dest]], gossip_to_send_in_ack)
-                          /\ UNCHANGED <<incarnation>>
-                    /\ HandleGossip(r.dest, gossip_to_store) 
+        /\ LET send_gossip == SelectOutgoingAckGossip(r.dest, r.payload.state)
+           IN 
+                /\ \/ /\ r.payload.incarnation > incarnation[r.dest]
+                      /\ incarnation' = [incarnation EXCEPT ![r.dest] = r.payload.incarnation + 1]
+                      /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], send_gossip)
+                   \/ /\ r.payload.state = Suspect
+                      /\ incarnation' = [incarnation EXCEPT ![r.dest] = incarnation[r.dest] + 1]
+                      /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], send_gossip)
+                   \/ /\ r.payload.incarnation <= incarnation[r.dest]
+                      /\ SendAck(r, [incarnation |-> incarnation[r.dest]], send_gossip)
+                      /\ UNCHANGED <<incarnation>>
+                /\ HandleGossip(r.dest, r.gossip, send_gossip) 
     /\ UNCHANGED <<tick, responses_seen, pending_req >>
 
-(*
---------------------------------------------------
-ACTION ReceiveAck
---------------------------------------------------
+(************************************************************************) 
+(******************** ACTION: ReceiveAck ********************************)
+(************************************************************************)
+
+(* Notes
+
 Handles an ack message from a peer
 - If the acknowledged message is greater than the incarnation for the member on the destination
 node, update the member's state and add an update for gossip.
@@ -428,24 +479,24 @@ ReceiveAck ==
             /\ NotProcessedResponse(response)
             /\ response.type = AckMessage
             /\ LET new_gossip == IF response.payload.incarnation > members[response.dest][response.source].incarnation 
-                                 THEN updates[response.dest] 
-                                         \union response.gossip 
+                                 THEN response.gossip 
                                          \union { [id          |-> response.source, 
                                                    incarnation |-> response.payload.incarnation, 
-                                                   state       |-> Alive, 
-                                                   hops        |-> 0] }
-                                 ELSE updates[response.dest] \union response.gossip
+                                                   state       |-> Alive] }
+                                 ELSE response.gossip
                IN 
                 /\ tick' = [tick EXCEPT ![response.dest] = @ + 1]
-                /\ HandleGossip(response.dest, new_gossip)
+                /\ HandleGossip(response.dest, new_gossip, {})
                 /\ UntrackPending(r.source, r.dest)
                 /\ ResponseProcessed(response)
                 /\ UNCHANGED <<incarnation, requests>>
 
-(*
---------------------------------------------------
-ACTION ProbeFails
---------------------------------------------------
+(************************************************************************) 
+(******************** ACTION: ProbeFails ********************************)
+(************************************************************************)
+
+(* Notes
+
 Handles a failed probe.
 
 If the probe request matches the local incarnation for the probe destination and the local
@@ -469,15 +520,17 @@ ProbeFails ==
         /\ RequestFailed(r)
         /\ UNCHANGED <<incarnation, responses_seen, sim_complete>>
 
-(*
---------------------------------------------------
-ACTION Expire
---------------------------------------------------
+(************************************************************************) 
+(******************** ACTION: Expire ********************************)
+(************************************************************************)
+
+(* Notes
+
 Expires a suspected peer once it has reached the timeout
 * 'source' is the node on which to expire the peer
 * 'dest' is the peer to expire
 
-If the destination's state is Suspect, change its state to Dead and enqueue a gossip
+If the destination's state is Suspect, change its state to Dead and add a gossip
 update to notify peers of the state change.
 
 Set the sim_complete variable to 1 if this action will cause convergence (so we deadlock soon after)
@@ -486,7 +539,7 @@ Expire(source, dest) ==
     /\ source # dest
     /\ members[source][dest].state = Suspect
     /\ members[source][dest].suspect_timeout <= 0
-    /\ UpdateState(source, dest, members[source][dest].incarnation, Dead, 0)
+    /\ UpdateState(source, dest, members[source][dest].incarnation, Dead)
     /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
     /\ UNCHANGED <<incarnation, requests, pending_req, responses_seen, tick >>
 
@@ -519,7 +572,7 @@ RemoveMember(id) ==
     /\ incarnation[id] # Nil
     /\ incarnation' = [incarnation EXCEPT ![id] = Nil]
     /\ members' = [members EXCEPT ![id] = [j \in Member |-> [incarnation |-> 0, state |-> Nil, suspect_timeout |-> SuspectTimeout]]]
-    /\ updates' = [updates EXCEPT ![id] = <<>>]
+    /\ updates' = [updates EXCEPT ![id] = {}]
     /\ UNCHANGED <<requests, pending_req, responses_seen, tick, sim_complete>>
 
 ----
@@ -552,17 +605,13 @@ Next ==
 
 \* Prints out the stats on deadlock 
 \* The spec is designed to deadlock shortly after convergence is reached
-\* CURRENTLY SET UP FOR MODEL CHECKING (NO PRINTING)
 PrintStatesOnConvergence ==
     IF (~ ENABLED Next) THEN
         IF Converged THEN
-            \*/\ \A m \in LiveMembers : PrintT("ticks" \o "," \o ToString(m) \o "," \o ToString(tick[m]))
-            \*/\ PrintT("converged")
-            TRUE
+            /\ \A m \in LiveMembers : PrintT("ticks" \o "," \o ToString(m) \o "," \o ToString(tick[m]))
+            /\ PrintT("converged")
         ELSE
-            FALSE
-            \*/\ Print("could not converge", FALSE)
-        
+            /\ Print("could not converge", FALSE)
     ELSE
         \A m \in Member : tick[m] \in Nat
 
@@ -580,6 +629,6 @@ Spec == Init /\ [][Next]_vars /\ Liveness
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Aug 20 04:27:30 PDT 2020 by jack
+\* Last modified Fri Aug 21 07:47:21 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
