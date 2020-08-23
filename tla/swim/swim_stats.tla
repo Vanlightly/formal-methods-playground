@@ -36,7 +36,7 @@ Not implemented:
 
 *)
 
-EXTENDS Naturals, FiniteSets, Sequences, TLC, Integers
+EXTENDS Naturals, FiniteSets, Sequences, TLC, TLCExt, Integers
 
 
 CONSTANTS Member,                \* The set of possible members
@@ -62,15 +62,37 @@ ASSUME MaxUpdatesPerPiggyBack \in (Nat \ {0})
 VARIABLES incarnation,      \* Member incarnation numbers
           members,          \* Member state of the ensemble
           updates,          \* Pending updates to be gossipped
-          tick,             \* A per member counter for the number of probes sent. This is used
+          round,            \* A per member counter for the number of probes sent. This is used
                             \* to ensure that members send out probes at the same rate. It is not
                             \* part of the actual state of the system, but a meta variable for this spec.
           requests,         \* a function of all requests and their responses
           pending_req,      \* tracking pending requests per member to member       
           responses_seen,   \* the set of all processed responses
-          sim_complete      \* used to signal the end of the simulation    
+          sim_complete      \* used to signal the end of the simulation
+          
+vars == <<incarnation, members, updates, requests, pending_req, responses_seen, round, sim_complete>>
+message_vars == <<requests, pending_req, responses_seen>>
 
-vars == <<incarnation, members, updates, requests, pending_req, responses_seen, tick, sim_complete>>
+
+gossip_card_ctr(r) ==
+    (r * 100)
+
+eff_gossip_card_ctr(r) ==
+    (r * 100) + 1
+
+suspect_ctr(r) ==
+    (r * 100) + 2
+    
+dead_ctr(r) ==
+    (r * 100) + 3 
+    
+
+ResetStats ==
+    \A r \in 0..1000 : 
+        /\ TLCSet(gossip_card_ctr(r), 0)
+        /\ TLCSet(eff_gossip_card_ctr(r), 0)
+        /\ TLCSet(suspect_ctr(r), -1)
+        /\ TLCSet(dead_ctr(r), -1)
 
 ----
 
@@ -82,8 +104,9 @@ InitMemberVars ==
                                        THEN [m1 \in Member |-> [incarnation |-> 0, state |-> Nil, suspect_timeout |-> SuspectTimeout]]
                                        ELSE [m1 \in Member |-> [incarnation |-> 1, state |-> Alive, suspect_timeout |-> SuspectTimeout]]]
         /\ updates = [m \in Member |-> <<>>]
-        /\ tick = [m \in Member |-> 0]
+        /\ round = [m \in Member |-> 0]
         /\ sim_complete = 0
+        /\ ResetStats
 
 InitMessageVars ==
     /\ requests = [req \in {} |-> 0]
@@ -136,10 +159,15 @@ UntrackPending(source, dest) ==
 (* HELPER Operators to determine if the ensemble has converged 
    on the real state of the system *)
 
+MaxRound ==
+    LET highest == CHOOSE m1 \in Member :
+        \A m2 \in Member: round[m1] >= round[m2]
+    IN round[highest]
+
 \* The set of all members that are alive
 LiveMembers ==
     { m \in Member : incarnation[m] # Nil }
-
+    
 \* The real state being either dead or alive. The real state of a member 
 \* cannot be "suspected".
 RealStateOfMember(m) ==
@@ -182,10 +210,10 @@ Gossip is selected for piggybacking on probes and acks based on:
    disseminated fewer times. All gossip is stored in a function gossip |-> dissemination counter
 *)
 
-GossipUnderLimit(m) ==
+UpdatesUnderLimit(m) ==
     { update \in DOMAIN updates[m] : updates[m][update] < DisseminationLimit }
     
-GossipOverLimit(m) ==
+UpdatesOverLimit(m) ==
     { update \in DOMAIN updates[m] : updates[m][update] >= DisseminationLimit } 
 
 \* Choose the gossip based on the MaxUpdatesPerGossip and when there is more
@@ -199,20 +227,20 @@ Prioritise(m, candidate_gossip, limit) ==
             \A u2 \in candidate_gossip :
                 updates[m][u1] <= updates[m][u2] 
 
-SelectOutgoingGossip(m, new_gossip) ==
-    LET candidate_gossip == GossipUnderLimit(m)
-        limit == IF new_gossip = {} THEN MaxUpdatesPerPiggyBack ELSE MaxUpdatesPerPiggyBack - 1 
+SelectOutgoingGossip(m, new_updates) ==
+    LET candidate_updates == UpdatesUnderLimit(m)
+        limit == IF new_updates = {} THEN MaxUpdatesPerPiggyBack ELSE MaxUpdatesPerPiggyBack - 1 
     IN
-        IF Cardinality(candidate_gossip) <= limit 
-        THEN candidate_gossip \union new_gossip
+        IF Cardinality(candidate_updates) <= limit 
+        THEN candidate_updates \union new_updates
         ELSE 
-            LET prioritised_gossip == Prioritise(m, candidate_gossip, limit)
-            IN prioritised_gossip \union new_gossip
+            LET prioritised_updates == Prioritise(m, candidate_updates, limit)
+            IN prioritised_updates \union new_updates
             
 \* The gossip that is a candidate for being piggybacked on the ack
 \* This is the existing pending gossip + a new gossip
 \* The gossip received in the probe is not included
-RefuteSuspicionGossip(member, probe_state) ==
+MayBeRefuteState(member, probe_state) ==
     IF probe_state = Suspect
     THEN { [id          |-> member, 
             incarnation |-> incarnation'[member], 
@@ -222,7 +250,7 @@ RefuteSuspicionGossip(member, probe_state) ==
 \* This gossip can also include a refutation of being Suspect. Not currently
 \* needed in this spec, but will be required if testing false positives later on.
 SelectOutgoingAckGossip(member, probe_state) ==
-    SelectOutgoingGossip(member, RefuteSuspicionGossip(member, probe_state))
+    SelectOutgoingGossip(member, MayBeRefuteState(member, probe_state))
 
 \* Increment the dissemination counter of each gossip item
 IncrementPiggybackCount(member, gossip_to_send) ==
@@ -248,50 +276,51 @@ The merged and compacted gossip is then applied to known information that the me
 all other members (the members variable).
 *)
 
+
 \* Returns TRUE or FALSE as to whether an individual gossip item is new for this member
 \* It is new only if:
 \* - its incarnation number is > than the known incarnation number of the target member
 \* - its incarnation number equals the known incarnation number of the target member but its state has higher precedence
-IsNewInformation(member, gossip) ==
-    \/ gossip.incarnation > members[member][gossip.id].incarnation
-    \/ /\ gossip.incarnation = members[member][gossip.id].incarnation
-       /\ gossip.state < members[member][gossip.id].state
+IsNewInformation(member, update) ==
+    \/ update.incarnation > members[member][update.id].incarnation
+    \/ /\ update.incarnation = members[member][update.id].incarnation
+       /\ update.state < members[member][update.id].state
        
 \* Returns TRUE if the gossip matches currently known information or is new       
-IsCurrentOrNewInformation(member, gossip) ==
-    \/ gossip.incarnation >= members[member][gossip.id].incarnation
-    \/ /\ gossip.incarnation = members[member][gossip.id].incarnation
-       /\ gossip.state <= members[member][gossip.id].state       
+IsCurrentOrNewInformation(member, update) ==
+    \/ update.incarnation >= members[member][update.id].incarnation
+    \/ /\ update.incarnation = members[member][update.id].incarnation
+       /\ update.state <= members[member][update.id].state       
 
 \* Merges incoming gossip with existing gossip and compacts it, removing any stale items
 \* 1. Merge the gossip with any existing gossip that the member has. The merged gossip may have
 \*    multiple items pertaining to a given member id.
 \* 2. Compact the merged gossip to remove stale items and so that even in the case 
 \*    that there are multiple items of a given id only the highest precedence one remains.
-MergeAndCompactGossip(member, gossip_items) ==
-    LET merged_gossip == DOMAIN updates[member] \union gossip_items
+MergeAndCompactUpdates(member, incoming_updates) ==
+    LET merged_updates == DOMAIN updates[member] \union incoming_updates
     IN  { 
-            g1 \in merged_gossip :
-                /\ IsCurrentOrNewInformation(member, g1)
-                /\ ~\E g2 \in merged_gossip :
-                    /\ g1 # g2
-                    /\ g1.id = g2.id
-                    /\ \/ g2.incarnation > g1.incarnation
-                       \/ /\ g2.incarnation = g1.incarnation
-                          /\ g2.state < g1.state  
+            u1 \in merged_updates :
+                /\ IsCurrentOrNewInformation(member, u1)
+                /\ ~\E u2 \in merged_updates :
+                    /\ u1 # u2
+                    /\ u1.id = u2.id
+                    /\ \/ u2.incarnation > u1.incarnation
+                       \/ /\ u2.incarnation = u1.incarnation
+                          /\ u2.state < u1.state  
          }
 
 \* Returns TRUE or FALSE as to whether the member has a gossip 
-MemberHasGossipItem(member, gossip_items) ==
-    \E g \in gossip_items : g.id = member
+MemberHasUpdate(member, compacted_updates) ==
+    \E u \in compacted_updates : u.id = member
 
 \* Returns the gossip that concerns this member    
-GossipItemOfMember(member, gossip_items) ==
-    CHOOSE g \in gossip_items : g.id = member
+UpdateOfMember(member, compacted_updates) ==
+    CHOOSE u \in compacted_updates : u.id = member
 
 \* Saves the compacted gossip and increments the dissemination counter of any gossip that
 \* was sent out
-SaveGossip(member, compacted_updates, sent_updates) ==
+SaveUpdates(member, compacted_updates, sent_updates) ==
     updates' = [updates EXCEPT ![member] = 
                     [u \in compacted_updates |->
                         LET sent == u \in sent_updates
@@ -306,26 +335,77 @@ SaveGossip(member, compacted_updates, sent_updates) ==
 \* If its new information, update the state
 \* If the information already exists, then no change
 \* If there is no gossip about a member, then no change 
-UpdateMemberState(member, compacted_gossip) ==
+UpdateMemberState(member, compacted_updates) ==
     members' = [members EXCEPT ![member] = 
                     [m \in Member |-> 
-                          IF MemberHasGossipItem(m, compacted_gossip) 
-                          THEN LET gossip_item == GossipItemOfMember(m, compacted_gossip)
-                               IN IF IsNewInformation(member, gossip_item)
-                                  THEN [incarnation     |-> gossip_item.incarnation, 
-                                        state           |-> gossip_item.state,
+                          IF MemberHasUpdate(m, compacted_updates) 
+                          THEN LET update == UpdateOfMember(m, compacted_updates)
+                               IN IF IsNewInformation(member, update)
+                                  THEN [incarnation     |-> update.incarnation, 
+                                        state           |-> update.state,
                                         suspect_timeout |-> SuspectTimeout] 
                                   ELSE @[m]
                           ELSE @[m]]]
 
+
+NextStateMemberCount(state) ==
+    Cardinality({dest \in Member : 
+        \E source \in Member :
+            members'[source][dest].state = state})
+            
+CurrentMemberCount(state) ==
+    Cardinality({dest \in Member : 
+        \E source \in Member :
+            members[source][dest].state = state})            
+
+MayBeRecordMemberCounts ==
+    \* Is this is a step that leads to all members being on the same round then record the member count stats
+    IF \E m1, m2 \in LiveMembers : round[m1] # round[m2] /\ \A m3, m4 \in LiveMembers : round'[m3] = round'[m4]
+    THEN
+        LET r == MaxRound
+        IN
+            /\ TLCSet(suspect_ctr(r), NextStateMemberCount(Suspect))
+            /\ TLCSet(dead_ctr(r), NextStateMemberCount(Dead))
+    ELSE TRUE
+
+RecordIncomingGossipStats(member, gossip_source, incoming_gossip) ==
+    LET card_id     == gossip_card_ctr(round[gossip_source])
+        eff_card_id == eff_gossip_card_ctr(round[gossip_source])
+    IN 
+       \* gossip cardinality
+       /\ TLCSet(card_id, TLCGet(card_id) + Cardinality(incoming_gossip))
+       \* effective gossip cardinality
+       /\ LET effective_count == Cardinality({ g \in incoming_gossip : 
+                                                /\ IsNewInformation(member, g)
+                                                /\ g \in DOMAIN updates[gossip_source]})
+          IN TLCSet(eff_card_id, TLCGet(eff_card_id) + effective_count)
+       \* suspect and dead counts
+       /\ MayBeRecordMemberCounts         
+             
+             (*         
+            \A n \in 0..DisseminationLimit :
+                LET count == Cardinality({ g \in new_info_from_source : 
+                                            updates[gossip_source][g] = n })
+                IN 
+                    IF count > 0 
+                    THEN TLCSet(eff_gossip_age_ctr(count), TLCGet(eff_gossip_age_ctr(count)) + count)
+                    ELSE TRUE*)
+(*                    
+\A round \in 0..1000 : 
+        /\ TLCSet(gossip_card_ctr(round), 0)
+        /\ TLCSet(eff_gossip_card_ctr(round), 0)
+        /\ TLCSet(suspect_ctr(round), 0)
+        /\ TLCSet(dead_ctr(round), 0)
+*)
 \* Merges and compacts gossip, then:
 \* - Updates the known information of other members based on the new gossip
 \* - Save the gossip (includes incrementing dissemination counters)
-HandleGossip(member, incoming_gossip, sent_gossip) ==
-    LET compacted_gossip == MergeAndCompactGossip(member, incoming_gossip)
+HandleGossip(member, gossip_source, incoming_updates, sent_updates) ==
+    LET compacted_updates == MergeAndCompactUpdates(member, incoming_updates)
     IN
-        /\ UpdateMemberState(member, compacted_gossip)
-        /\ SaveGossip(member, compacted_gossip, sent_gossip)
+        /\ UpdateMemberState(member, compacted_updates)
+        /\ SaveUpdates(member, compacted_updates, sent_updates)
+        /\ TLCDefer(RecordIncomingGossipStats(member, gossip_source, incoming_updates))
         /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
 
 \* Updates the state of a peer on the given 'source' node
@@ -334,9 +414,9 @@ UpdateState(source, dest, inc, state) ==
     /\ members' = [members EXCEPT ![source][dest] = [incarnation     |-> inc, 
                                                      state           |-> state,
                                                      suspect_timeout |-> @.suspect_timeout]]
-    /\ SaveGossip(source, {[id          |-> dest, 
-                            incarnation |-> inc, 
-                            state       |-> state]}, {})
+    /\ SaveUpdates(source, {[id          |-> dest, 
+                             incarnation |-> inc, 
+                             state       |-> state]}, {})
 
 \* Updates the state of a peer on the given 'source' node and decrements its suspect timeout counter.
 \* When the state of the 'dest' is updated, an update message is added to existing gossip    
@@ -344,9 +424,9 @@ UpdateAsSuspect(source, dest, inc) ==
     /\ members' = [members EXCEPT ![source][dest] = [incarnation |-> inc, 
                                                      state       |-> Suspect,
                                                      suspect_timeout |-> @.suspect_timeout - 1]]
-    /\ SaveGossip(source, {[id          |-> dest, 
-                           incarnation |-> inc, 
-                           state       |-> Suspect]}, {})
+    /\ SaveUpdates(source, {[id          |-> dest, 
+                            incarnation |-> inc, 
+                            state       |-> Suspect]}, {})
 
 
 (************************************************************************) 
@@ -382,21 +462,19 @@ IsValidProbeTarget(source, dest) ==
        \/ /\ members[source][dest].state = Suspect
           /\ members[source][dest].suspect_timeout > 0
 
-\* 'tick' balances the probes across the ensemble more or less
-\* 'pending_req' ensures we don;t have more than one pedning request for this source-dest
-\* and also 
+\* 'round' balances the probes across the ensemble more or less
+\* 'pending_req' ensures we don't have more than one pending request for this source at a time
 IsFairlyScheduled(source, dest) ==
-    /\ pending_req[source][dest].pending = FALSE
+    /\ \A m \in Member : pending_req[source][m].pending = FALSE
     /\ \A m \in Member : 
          IF IsValidProbeTarget(source, m) 
          THEN pending_req[source][dest].count <= pending_req[source][m].count
          ELSE TRUE
-    /\ \A m1 \in LiveMembers : tick[source] <= tick[m1]
+    /\ \A m1 \in LiveMembers : round[source] <= round[m1]
 
 Probe(source, dest) ==
     /\ sim_complete = 0
     /\ incarnation[source] # Nil        \* The source is alive
-    /\ pending_req[source][dest].pending = FALSE
     /\ HasNoMembersToExpire(source)     \* Only send a probe if we have no pending expiries
     /\ IsValidProbeTarget(source, dest) \* The dest is valid (not dead for example)
     /\ IsFairlyScheduled(source, dest)  \* We aim to make the rate probe sending more or less balanced
@@ -405,12 +483,12 @@ Probe(source, dest) ==
         /\ SendRequest([type    |-> ProbeMessage,
                         source  |-> source,
                         dest    |-> dest,
-                        tick    |-> tick[source],
+                        round   |-> round[source],
                         payload |-> members[source][dest],
                         gossip  |-> gossip_to_send])
         /\ IncrementPiggybackCount(source, gossip_to_send)
         /\ TrackPending(source, dest)
-        /\ UNCHANGED <<incarnation, members, tick, responses_seen, sim_complete >>
+        /\ UNCHANGED <<incarnation, members, round, responses_seen, sim_complete >>
 
 
         
@@ -435,12 +513,12 @@ send an ack.
 
 \* Send an ack and piggyback gossip if any to send
 SendAck(request, payload, piggyback_gossip) ==
-    SendReply(request, [type      |-> AckMessage,
-                        source    |-> request.dest,
-                        dest      |-> request.source,
-                        dest_tick |-> request.tick,
-                        payload   |-> payload,
-                        gossip    |-> piggyback_gossip])
+    SendReply(request, [type       |-> AckMessage,
+                        source     |-> request.dest,
+                        dest       |-> request.source,
+                        dest_round |-> request.round,
+                        payload    |-> payload,
+                        gossip     |-> piggyback_gossip])
  
 ReceiveProbe ==
     \E r \in DOMAIN requests :
@@ -457,8 +535,8 @@ ReceiveProbe ==
                    \/ /\ r.payload.incarnation <= incarnation[r.dest]
                       /\ SendAck(r, [incarnation |-> incarnation[r.dest]], send_gossip)
                       /\ UNCHANGED <<incarnation>>
-                /\ HandleGossip(r.dest, r.gossip, send_gossip) 
-    /\ UNCHANGED <<tick, responses_seen, pending_req >>
+                /\ HandleGossip(r.dest, r.source, r.gossip, send_gossip) 
+    /\ UNCHANGED <<round, responses_seen, pending_req >>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveAck ********************************)
@@ -470,7 +548,7 @@ Handles an ack message from a peer
 - If the acknowledged message is greater than the incarnation for the member on the destination
 node, update the member's state and add an update for gossip.
 - Also adds any piggybacked gossip on ack to pending updates.
-- Increments this member's tick amd untracks the original request - required for fair scheduling
+- Increments this member's round amd untracks the original request - required for fair scheduling
 *)
 ReceiveAck ==
     \E r \in DOMAIN requests :
@@ -485,8 +563,8 @@ ReceiveAck ==
                                                    state       |-> Alive] }
                                  ELSE response.gossip
                IN 
-                /\ tick' = [tick EXCEPT ![response.dest] = @ + 1]
-                /\ HandleGossip(response.dest, new_gossip, {})
+                /\ round' = [round EXCEPT ![response.dest] = @ + 1]
+                /\ HandleGossip(response.dest, response.source, new_gossip, {})
                 /\ UntrackPending(r.source, r.dest)
                 /\ ResponseProcessed(response)
                 /\ UNCHANGED <<incarnation, requests>>
@@ -502,7 +580,7 @@ Handles a failed probe.
 If the probe request matches the local incarnation for the probe destination and the local
 state for the destination is Alive or Suspect, update the state to Suspect and decrement the timeout counter.
 
-Increments this member's tick amd untracks the original request - required for fair scheduling
+Increments this member's round amd untracks the original request - required for fair scheduling
 *)
 ProbeFails ==
     \E r \in DOMAIN requests :
@@ -515,7 +593,8 @@ ProbeFails ==
            THEN
                 UpdateAsSuspect(r.source, r.dest, r.payload.incarnation)
            ELSE UNCHANGED << members, updates >>
-        /\ tick' = [tick EXCEPT ![r.source] = @ + 1]
+        /\ round' = [round EXCEPT ![r.source] = @ + 1]
+        /\ TLCDefer(MayBeRecordMemberCounts)
         /\ UntrackPending(r.source, r.dest)
         /\ RequestFailed(r)
         /\ UNCHANGED <<incarnation, responses_seen, sim_complete>>
@@ -541,7 +620,7 @@ Expire(source, dest) ==
     /\ members[source][dest].suspect_timeout <= 0
     /\ UpdateState(source, dest, members[source][dest].incarnation, Dead)
     /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
-    /\ UNCHANGED <<incarnation, requests, pending_req, responses_seen, tick >>
+    /\ UNCHANGED <<incarnation, requests, pending_req, responses_seen, round >>
 
 (*
 ***************** NOT CURRENTLY USED *****************
@@ -558,7 +637,7 @@ AddMember(id) ==
     /\ incarnation[id] = Nil
     /\ incarnation' = [incarnation EXCEPT ![id] = 1]
     /\ members' = [members EXCEPT ![id] = [i \in DOMAIN members |-> [incarnation |-> 0, state |-> Dead, suspect_timeout |-> SuspectTimeout]]]
-    /\ UNCHANGED <<updates, requests, pending_req, responses_seen, tick, sim_complete>>
+    /\ UNCHANGED <<updates, requests, pending_req, responses_seen, round, sim_complete>>
 
 (*
 ***************** NOT CURRENTLY USED *****************
@@ -573,7 +652,7 @@ RemoveMember(id) ==
     /\ incarnation' = [incarnation EXCEPT ![id] = Nil]
     /\ members' = [members EXCEPT ![id] = [j \in Member |-> [incarnation |-> 0, state |-> Nil, suspect_timeout |-> SuspectTimeout]]]
     /\ updates' = [updates EXCEPT ![id] = {}]
-    /\ UNCHANGED <<requests, pending_req, responses_seen, tick, sim_complete>>
+    /\ UNCHANGED <<requests, pending_req, responses_seen, round, sim_complete>>
 
 ----
 
@@ -608,12 +687,25 @@ Next ==
 PrintStatesOnConvergence ==
     IF (~ ENABLED Next) THEN
         IF Converged THEN
-            /\ \A m \in LiveMembers : PrintT("ticks" \o "," \o ToString(m) \o "," \o ToString(tick[m]))
+            /\ \A m \in LiveMembers : PrintT("rounds" \o "," \o ToString(m) \o "," \o ToString(round[m]))
+            /\ LET max_stats_round == MaxRound
+               IN
+                /\ \A r \in 1..max_stats_round : PrintT("gossip_card" \o "," \o ToString(r) \o "," \o ToString(TLCGet(gossip_card_ctr(r))))
+                /\ \A r \in 1..max_stats_round : PrintT("eff_gossip_card" \o "," \o ToString(r) \o "," \o ToString(TLCGet(eff_gossip_card_ctr(r))))
+                /\ \A r \in 1..max_stats_round : 
+                    IF TLCGet(suspect_ctr(r)) = -1 
+                    THEN PrintT("suspect_count" \o "," \o ToString(r) \o "," \o ToString(CurrentMemberCount(Suspect)))
+                    ELSE PrintT("suspect_count" \o "," \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
+                /\ \A r \in 1..max_stats_round :
+                    IF TLCGet(dead_ctr(r)) = -1 
+                    THEN PrintT("dead_count" \o "," \o ToString(r) \o "," \o ToString(CurrentMemberCount(Dead)))
+                    ELSE PrintT("dead_count" \o "," \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
             /\ PrintT("converged")
+            /\ ResetStats
         ELSE
             /\ Print("could not converge", FALSE)
     ELSE
-        \A m \in Member : tick[m] \in Nat
+        \A m \in Member : round[m] \in Nat
 
 (*
 OLD - TO BE REVIEWED
@@ -629,6 +721,6 @@ Spec == Init /\ [][Next]_vars /\ Liveness
 
 =============================================================================
 \* Modification History
-\* Last modified Fri Aug 21 07:47:21 PDT 2020 by jack
+\* Last modified Sun Aug 23 07:22:01 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
