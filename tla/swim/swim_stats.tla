@@ -241,7 +241,7 @@ Prioritise(member, candidate_peers, limit) ==
     CHOOSE peer_subset \in SUBSET candidate_peers :
         /\ Cardinality(peer_subset) = limit
         /\ \A peer1 \in peer_subset :
-            \A peer2 \in candidate_peers :
+            \A peer2 \in candidate_peers \ peer_subset :
                 peer_states[member][peer1].disseminations <= peer_states[member][peer2].disseminations
 
 SelectOutgoingGossip(member, incoming_gossip) ==
@@ -649,6 +649,7 @@ PrintStatesOnConvergence ==
             /\ LET max_stats_round == MaxRound
                    cfg_str == "," \o ToString(Cardinality(Member)) 
                                 \o "," \o ToString(DeadMemberCount)
+                                \o "," \o ToString(SuspectTimeout)
                                 \o "," \o ToString(DisseminationLimit)
                                 \o "," \o ToString(MaxUpdatesPerPiggyBack)
                                 \o ","
@@ -693,6 +694,6 @@ Spec == Init /\ [][Next]_vars /\ Liveness
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Aug 25 03:31:44 PDT 2020 by jack
+\* Last modified Tue Aug 25 06:51:00 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
