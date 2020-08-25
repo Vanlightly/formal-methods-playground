@@ -249,7 +249,8 @@ SelectOutgoingGossip(member, incoming_gossip) ==
     IN
         IF Cardinality(candidate_peers) <= MaxUpdatesPerPiggyBack 
         THEN [peer \in candidate_peers |-> peer_states[member][peer]]
-        ELSE Prioritise(member, candidate_peers, MaxUpdatesPerPiggyBack)
+        ELSE LET peers == Prioritise(member, candidate_peers, MaxUpdatesPerPiggyBack)
+             IN [peer \in peers |-> peer_states[member][peer]]
             
 IncrementPiggybackCount(member, updates_to_send) ==
     peer_states' = [peer_states EXCEPT ![member] = 
@@ -694,6 +695,6 @@ Spec == Init /\ [][Next]_vars /\ Liveness
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Aug 25 06:51:00 PDT 2020 by jack
+\* Last modified Tue Aug 25 06:56:14 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
