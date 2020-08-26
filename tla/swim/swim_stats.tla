@@ -15,7 +15,7 @@ Summary of modifications:
     - Gossip messages (peer states) are piggybacked on probe and ack messages.
     - The number of peer states per probe/ack is limited
     - When there are more peer states than can fit, those with the fewest disseminations are prioritised.
-    - Suspected members are marked as dead after a timeout
+    - Suspected members are marked as dead after a timeout (number of protocol rounds)
 - Fair scheduling is modelled to ensure that:
     - the probe rate of each member is balanced
     - each member randomly picks another member to probe, but with guaranteed bounds 
@@ -93,26 +93,26 @@ dead_states_ctr(r) ==
     
 
 ResetStats ==
-    \A r \in 0..1000 : 
+    \A r \in 1..1000 : 
         /\ TLCSet(updates_pr_ctr(r), 0)
         /\ TLCSet(eff_updates_pr_ctr(r), 0)
-        /\ TLCSet(suspect_ctr(r), -1)
-        /\ TLCSet(dead_ctr(r), -1)
-        /\ TLCSet(suspect_states_ctr(r), -1)
-        /\ TLCSet(dead_states_ctr(r), -1)
+        /\ TLCSet(suspect_ctr(r), 0)
+        /\ TLCSet(dead_ctr(r), 0)
+        /\ TLCSet(suspect_states_ctr(r), 0)
+        /\ TLCSet(dead_states_ctr(r), 0)
 
 ----
 
 InitMemberVars ==
-    \E dead_members \in SUBSET Member : 
-        /\ Cardinality(dead_members) = DeadMemberCount
+    LET dead_members == CHOOSE s \in SUBSET Member : Cardinality(s) = DeadMemberCount
+    IN 
         /\ incarnation = [m \in Member |-> IF m \in dead_members THEN Nil ELSE 1]
         /\ peer_states = [m \in Member |-> [m1 \in Member |-> 
                                                 [incarnation    |-> 1, 
                                                  state          |-> Alive, 
-                                                 timeout        |-> SuspectTimeout, 
+                                                 round          |-> 1, 
                                                  disseminations |-> DisseminationLimit]]]
-        /\ round = [m \in Member |-> 0]
+        /\ round = [m \in Member |-> 1]
         /\ sim_complete = 0
         /\ ResetStats
 
@@ -315,23 +315,7 @@ RecordIncomingGossipStats(member, gossip_source, incoming_updates) ==
           IN TLCSet(eff_updates_ctr_id, TLCGet(eff_updates_ctr_id) + effective_count)
        \* suspect and dead counts
        /\ MayBeRecordMemberCounts         
-             
-             (*         
-            \A n \in 0..DisseminationLimit :
-                LET count == Cardinality({ g \in new_info_from_source : 
-                                            updates[gossip_source][g] = n })
-                IN 
-                    IF count > 0 
-                    THEN TLCSet(eff_gossip_age_ctr(count), TLCGet(eff_gossip_age_ctr(count)) + count)
-                    ELSE TRUE*)
-(*                    
-\A round \in 0..1000 : 
-        /\ TLCSet(gossip_card_ctr(round), 0)
-        /\ TLCSet(eff_gossip_card_ctr(round), 0)
-        /\ TLCSet(suspect_ctr(round), 0)
-        /\ TLCSet(dead_ctr(round), 0)
-*)
-            
+           
 (************************************************************************) 
 (******************** INCOMING GOSSIP ***********************************)
 (************************************************************************)
@@ -344,17 +328,17 @@ which has the same incarnation number, but a lower precedence state.
 The precedence order is (highest to lowest) Dead, Suspect, Alive.
 *)
 
-ResetCountersOfRecord(record) ==
+ResetCountersOfRecord(record, member_round) ==
     [incarnation    |-> record.incarnation,
      state          |-> record.state,
      disseminations |-> 0,
-     timeout        |-> SuspectTimeout]
+     round          |-> member_round]
 
-NewAliveMemberRecord(incarnation_number) ==
+NewAliveMemberRecord(incarnation_number, member_round) ==
     [incarnation    |-> incarnation_number, 
      state          |-> Alive, 
      disseminations |-> 0, 
-     timeout        |-> SuspectTimeout]
+     round          |-> member_round]
 
 \* updates the state of a member's peers based on incoming and outgoing gossip
 \* If member's incarnation for the gossip source is stale then update it
@@ -364,7 +348,7 @@ MergeGossip(member, gossip_source, source_incarnation, incoming_updates, sent_up
     [peer \in Member |-> 
         IF peer = gossip_source
         THEN IF peer_states[member][gossip_source].incarnation < source_incarnation
-             THEN NewAliveMemberRecord(source_incarnation)
+             THEN NewAliveMemberRecord(source_incarnation, round[member])
              ELSE peer_states[member][gossip_source]
         ELSE
             LET is_in_gossip == peer \in DOMAIN incoming_updates
@@ -372,7 +356,7 @@ MergeGossip(member, gossip_source, source_incarnation, incoming_updates, sent_up
             IN    
                 IF is_in_gossip
                 THEN IF IsNewInformation(member, peer, incoming_updates[peer])
-                     THEN ResetCountersOfRecord(incoming_updates[peer])
+                     THEN ResetCountersOfRecord(incoming_updates[peer], round[member])
                      ELSE IF is_in_sent
                           THEN [peer_states[member][peer] EXCEPT !.disseminations = @ + 1]
                           ELSE peer_states[member][peer]
@@ -390,19 +374,13 @@ HandleGossip(member, gossip_source, source_incarnation, incoming_updates, sent_u
        /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
 
 \* Updates the state and counters of a peer of the given member
-\* This is not called when an incarnation has changed
+\* This is not called when an incarnation has changed, only a state change 
+\* like Alive->Suspect or Suspect->Dead
 UpdateState(member, peer, state) ==
-    LET timeout == IF state = Suspect 
-                   THEN peer_states[member][peer].timeout - 1
-                   ELSE peer_states[member][peer]
-        disseminations == IF peer_states[member][peer].state = state
-                          THEN peer_states[member][peer].disseminations
-                          ELSE 0
-    IN                                       
-        peer_states' = [peer_states EXCEPT ![member][peer] = 
-                                    [@ EXCEPT !.state          = state,
-                                              !.disseminations = disseminations,
-                                              !.timeout        = timeout]]
+    peer_states' = [peer_states EXCEPT ![member][peer] =
+                        [@ EXCEPT !.state          = state,
+                                  !.disseminations = 0,
+                                  !.round          = round[member]]]
 
 (************************************************************************) 
 (******************** ACTION: PROBE *************************************)
@@ -424,14 +402,14 @@ Triggers a probe request to a peer
 HasNoMembersToExpire(member) ==
     ~\E peer \in Member :
         /\ peer_states[member][peer].state = Suspect
-        /\ peer_states[member][peer].timeout <= 0
+        /\ round[member] - peer_states[member][peer].round > SuspectTimeout
 
 IsValidProbeTarget(member, peer) ==
     /\ member # peer
     /\ peer_states[member][peer].state # Dead               \* The member believes the peer to be alive or suspect
     /\ \/ peer_states[member][peer].state # Suspect         \* If suspect, we haven't reached the suspect timeout
        \/ /\ peer_states[member][peer].state = Suspect
-          /\ peer_states[member][peer].timeout > 0
+          /\ round[member] - peer_states[member][peer].round <= SuspectTimeout
 
 \* 'round' balances the probes across the ensemble more or less
 \* 'pending_req' ensures we don't have more than one pending request for this source at a time
@@ -555,7 +533,7 @@ ProbeFails ==
         /\ incarnation[r.dest] = Nil
         /\ IF r.payload.incarnation > 0
                 /\ r.payload.incarnation = peer_states[r.source][r.dest].incarnation
-                /\ peer_states[r.source][r.dest].state \in { Alive, Suspect}
+                /\ peer_states[r.source][r.dest].state = Alive
            THEN
                 UpdateState(r.source, r.dest, Suspect)
            ELSE UNCHANGED << peer_states >>
@@ -580,7 +558,7 @@ Set the sim_complete variable to 1 if this action will cause convergence (so we 
 Expire(member, peer) ==
     /\ member # peer
     /\ peer_states[member][peer].state = Suspect
-    /\ peer_states[member][peer].timeout <= 0
+    /\ round[member] - peer_states[member][peer].round > SuspectTimeout
     /\ UpdateState(member, peer, Dead)
     /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
     /\ UNCHANGED <<incarnation, requests, pending_req, responses_seen, round >>
@@ -598,7 +576,7 @@ Mod 1: No history variable
 AddMember(id) ==
     /\ incarnation[id] = Nil
     /\ incarnation' = [incarnation EXCEPT ![id] = 1]
-    /\ peer_states' = [peer_states EXCEPT ![id] = [i \in DOMAIN peer_states |-> [incarnation |-> 0, state |-> Dead, timeout |-> SuspectTimeout]]]
+    /\ peer_states' = [peer_states EXCEPT ![id] = [i \in DOMAIN peer_states |-> [incarnation |-> 0, state |-> Dead, round |-> 1]]]
     /\ UNCHANGED <<requests, pending_req, responses_seen, round, sim_complete>>
 
 (*
@@ -611,7 +589,7 @@ volatile state. We retain only the in-flight messages and history for model chec
 RemoveMember(id) ==
     /\ incarnation[id] # Nil
     /\ incarnation' = [incarnation EXCEPT ![id] = Nil]
-    /\ peer_states' = [peer_states EXCEPT ![id] = [j \in Member |-> [incarnation |-> 0, state |-> Nil, timeout |-> SuspectTimeout]]]
+    /\ peer_states' = [peer_states EXCEPT ![id] = [j \in Member |-> [incarnation |-> 0, state |-> Nil, round |-> 1]]]
     /\ UNCHANGED <<requests, pending_req, responses_seen, round, sim_complete>>
 
 ----
@@ -653,48 +631,42 @@ PrintStatesOnConvergence ==
                                 \o "," \o ToString(SuspectTimeout)
                                 \o "," \o ToString(DisseminationLimit)
                                 \o "," \o ToString(MaxUpdatesPerPiggyBack)
+                                \o "," \o ToString(MaxRound)
                                 \o ","
                IN
                 /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
                 /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
                 /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
                 /\ \A r \in 1..max_stats_round : 
-                    IF TLCGet(suspect_ctr(r)) = -1 
+                    IF r = max_stats_round 
                     THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Suspect)))
                     ELSE PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
                 /\ \A r \in 1..max_stats_round :
-                    IF TLCGet(dead_ctr(r)) = -1 
+                    IF r = max_stats_round 
                     THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Dead)))
                     ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
                 /\ \A r \in 1..max_stats_round : 
-                    IF TLCGet(suspect_states_ctr(r)) = -1 
+                    IF r = max_stats_round 
                     THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Suspect)))
                     ELSE PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_states_ctr(r))))
                 /\ \A r \in 1..max_stats_round :
-                    IF TLCGet(dead_states_ctr(r)) = -1 
+                    IF r = max_stats_round 
                     THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Dead)))
                     ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
             /\ PrintT("converged")
             /\ ResetStats
         ELSE
-            /\ Print("could not converge", FALSE)
+            Print("could not converge", FALSE) \* this should never happen
     ELSE
         \A m \in Member : round[m] \in Nat
 
-(*
-OLD - TO BE REVIEWED
-*)    
 Liveness ==
-    /\ \A m1, m2 \in Member :
-        /\ WF_vars(Probe(m1, m2))
-        /\ WF_vars(Expire(m1, m2))        
-
-    
+    WF_vars(Next)
 
 Spec == Init /\ [][Next]_vars /\ Liveness
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Aug 25 06:56:14 PDT 2020 by jack
+\* Last modified Tue Aug 25 23:19:50 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
