@@ -315,6 +315,44 @@ RecordIncomingGossipStats(member, gossip_source, incoming_updates) ==
           IN TLCSet(eff_updates_ctr_id, TLCGet(eff_updates_ctr_id) + effective_count)
        \* suspect and dead counts
        /\ MayBeRecordMemberCounts         
+
+PrintStats ==
+    /\ LET max_stats_round == MaxRound
+           cfg_str == "," \o ToString(Cardinality(Member)) 
+                        \o "," \o ToString(DeadMemberCount)
+                        \o "," \o ToString(SuspectTimeout)
+                        \o "," \o ToString(DisseminationLimit)
+                        \o "," \o ToString(MaxUpdatesPerPiggyBack)
+                        \o "," \o ToString(MaxRound)
+                        \o ","
+       IN
+        /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
+        /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
+        /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
+        /\ \A r \in 1..max_stats_round : 
+            IF r = max_stats_round 
+            THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Suspect)))
+            ELSE PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
+        /\ \A r \in 1..max_stats_round :
+            IF r = max_stats_round 
+            THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Dead)))
+            ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
+        /\ \A r \in 1..max_stats_round : 
+            IF r = max_stats_round 
+            THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Suspect)))
+            ELSE PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_states_ctr(r))))
+        /\ \A r \in 1..max_stats_round :
+            IF r = max_stats_round 
+            THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Dead)))
+            ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
+    /\ PrintT("converged")
+    /\ ResetStats
+    
+EndSim ==
+    /\ sim_complete = 1
+    /\ TLCDefer(PrintStats)
+    /\ sim_complete' = 2
+    /\ UNCHANGED <<incarnation, peer_states, requests, pending_req, responses_seen, round>>    
            
 (************************************************************************) 
 (******************** INCOMING GOSSIP ***********************************)
@@ -472,7 +510,8 @@ SendAck(request, payload, piggyback_gossip) ==
                         gossip     |-> piggyback_gossip])
  
 ReceiveProbe ==
-    \E r \in DOMAIN requests :
+    /\ sim_complete = 0
+    /\ \E r \in DOMAIN requests :
         /\ NotRepliedTo(r)
         /\ incarnation[r.dest] # Nil
         /\ LET send_gossip == SelectOutgoingGossip(r.dest, r.gossip)
@@ -501,7 +540,8 @@ node, update the member's state and add an update for gossip.
 - Increments this member's round amd untracks the original request - required for fair scheduling
 *)
 ReceiveAck ==
-    \E r \in DOMAIN requests :
+    /\ sim_complete = 0
+    /\ \E r \in DOMAIN requests :
         LET response == requests[r]
         IN
             /\ NotProcessedResponse(response)
@@ -527,7 +567,8 @@ state for the destination is Alive or Suspect, update the state to Suspect and d
 Increments this member's round amd untracks the original request - required for fair scheduling
 *)
 ProbeFails ==
-    \E r \in DOMAIN requests :
+    /\ sim_complete = 0
+    /\ \E r \in DOMAIN requests :
         /\ r.type = ProbeMessage
         /\ NotRepliedTo(r)
         /\ incarnation[r.dest] = Nil
@@ -556,6 +597,7 @@ update to notify peers of the state change.
 Set the sim_complete variable to 1 if this action will cause convergence (so we deadlock soon after)
 *)
 Expire(member, peer) ==
+    /\ sim_complete = 0
     /\ member # peer
     /\ peer_states[member][peer].state = Suspect
     /\ round[member] - peer_states[member][peer].round > SuspectTimeout
@@ -612,6 +654,7 @@ Next ==
     \/ ReceiveProbe
     \/ ReceiveAck
     \/ ProbeFails
+    \/ EndSim
     
 (* Remnants of original Next formula that is not currently required.
    Probablistic dropping of messages may be added at some point. *)
@@ -620,53 +663,16 @@ Next ==
     \* \/ \E m \in DOMAIN messages : DuplicateMessage(m)
     \* \/ \E m \in DOMAIN messages : DropMessage(m)
 
-\* Prints out the stats on deadlock 
-\* The spec is designed to deadlock shortly after convergence is reached
-PrintStatesOnConvergence ==
+Inv ==
     IF (~ ENABLED Next) THEN
-        IF Converged THEN
-            /\ LET max_stats_round == MaxRound
-                   cfg_str == "," \o ToString(Cardinality(Member)) 
-                                \o "," \o ToString(DeadMemberCount)
-                                \o "," \o ToString(SuspectTimeout)
-                                \o "," \o ToString(DisseminationLimit)
-                                \o "," \o ToString(MaxUpdatesPerPiggyBack)
-                                \o "," \o ToString(MaxRound)
-                                \o ","
-               IN
-                /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
-                /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
-                /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
-                /\ \A r \in 1..max_stats_round : 
-                    IF r = max_stats_round 
-                    THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Suspect)))
-                    ELSE PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
-                /\ \A r \in 1..max_stats_round :
-                    IF r = max_stats_round 
-                    THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(Dead)))
-                    ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
-                /\ \A r \in 1..max_stats_round : 
-                    IF r = max_stats_round 
-                    THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Suspect)))
-                    ELSE PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_states_ctr(r))))
-                /\ \A r \in 1..max_stats_round :
-                    IF r = max_stats_round 
-                    THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(Dead)))
-                    ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
-            /\ PrintT("converged")
-            /\ ResetStats
-        ELSE
-            Print("could not converge", FALSE) \* this should never happen
+        sim_complete = 2
     ELSE
         \A m \in Member : round[m] \in Nat
 
-Liveness ==
-    WF_vars(Next)
-
-Spec == Init /\ [][Next]_vars /\ Liveness
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 =============================================================================
 \* Modification History
-\* Last modified Tue Aug 25 23:19:50 PDT 2020 by jack
+\* Last modified Wed Aug 26 00:58:08 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
