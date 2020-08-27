@@ -288,12 +288,18 @@ CurrentStateCount(state) == StateCount(state, peer_states)
 NextStateStateCount(state) == StateCount(state, peer_states')
                 
 
+IsNewRoundTransitionStep(i, r1, r2, nil, mem) ==
+    /\ \E m1, m2 \in mem: i[m1] # nil /\ i[m2] # nil /\ r1[m1] # r1[m2] 
+    /\ \A m3, m4 \in mem: 
+        \/ i[m3] = Nil
+        \/ i[m4] = Nil
+        \/ /\ i[m3] # nil 
+           /\ i[m4] # nil 
+           /\ r2[m3] = r2[m4]
+
 MayBeRecordMemberCounts ==
     \* Is this is a step that leads to all members being on the same round then record the member count stats
-    LET live_members == LiveMembers
-    IN
-        IF  /\ \E m1, m2 \in live_members : round[m1] # round[m2] 
-            /\ \A m3, m4 \in live_members : round'[m3] = round'[m4]
+        IF  IsNewRoundTransitionStep(incarnation, round, round', Nil, Member)
         THEN
             LET r == MaxRound
             IN
@@ -326,6 +332,7 @@ PrintStats ==
                         \o "," \o ToString(MaxRound)
                         \o ","
        IN
+        /\ \A m \in Member : PrintT("members," \o ToString(m) \o "," \o ToString(Cardinality(Member)))
         /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
         /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
@@ -667,12 +674,16 @@ Inv ==
     IF (~ ENABLED Next) THEN
         sim_complete = 2
     ELSE
-        \A m \in Member : round[m] \in Nat
+        TRUE
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
-=============================================================================
+----------------------------------------------------------------------------
+
+TestMember == 1..10
+
+============================================================================
 \* Modification History
-\* Last modified Wed Aug 26 00:58:08 PDT 2020 by jack
+\* Last modified Thu Aug 27 04:11:44 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
