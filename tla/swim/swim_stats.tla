@@ -44,16 +44,18 @@ CONSTANTS Member,                \* The set of possible members
           ProbeRequestMessage,   \* Message type: probe request
           ForwardedAckMessage,   \* Message type: indirect ack forwarded
           
-          PeerGroupSize,         \* The number of peers to send probe requests when a direct probe fails
-          DeadMemberCount,       \* The number of dead members the ensemble need to detect
-          SuspectTimeout,        \* The number of failed probes before suspected node made dead
-          DisseminationLimit,    \* The lambda log n value (the maximum number of times a given update can be piggybacked)
-          MaxUpdatesPerPiggyBack \* The maximum  number of state updates to be included in
-                                 \* any given piggybacked gossip message
+          PeerGroupSize,          \* The number of peers to send probe requests when a direct probe fails
+          SuspectTimeout,         \* The number of failed probes before suspected node made dead
+          DisseminationLimit,     \* The lambda log n value (the maximum number of times a given update can be piggybacked)
+          MaxUpdatesPerPiggyBack, \* The maximum  number of state updates to be included in
+                                  \* any given piggybacked gossip message
+          
+          DeadMemberCount,        \* The number of dead members the ensemble need to detect
+          ForceRunToRound
 
 \* The values of member states must be sequential
 ASSUME Alive > Suspect /\ Suspect > Dead
-ASSUME DeadMemberCount \in (Nat \ {0})
+ASSUME DeadMemberCount \in Nat
 ASSUME SuspectTimeout \in Nat
 ASSUME MaxUpdatesPerPiggyBack \in (Nat \ {0})
             
@@ -63,12 +65,10 @@ VARIABLES \* actual state in the protocol
           round,                \* Each member keeps track of which round of the protocol it is in
           pending_direct_ack,   \* Each member keeps track of members it is pending a direct ack from
           pending_indirect_ack, \* Each member keeps track of members it is pending an idirect ack from
-          
-          \* fair scheduling
-          probe_ctr,
-          
+          probe_ctr,            \* Each member keeps track of how many probes it has sent to each peer
+                                \* It randomly selects peers, but keeps the number of probes balanced
           \* messaging passing
-          messages,         \* a function of all messages       
+          messages,             \* a function of all messages       
                     
           \* to end simulation once convergence reached
           sim_complete
@@ -203,7 +203,7 @@ WillBeConverged ==
 (************************************************************************)
 
 (* NOTES
-Peer states are selected for piggybacking on probes and acks based on:
+Peer states are selected for piggybacking on probes, probe requests and acks based on:
 1. The maximum number of times a peer state can be disseminated (lambda log n in the paper
    but in this spec the constant DisseminationLimit.
 2. The maximum number of peer states that can be piggybacked on any given probe or ack.
@@ -319,6 +319,14 @@ RecordIncomingGossipStats(member, gossip_source, incoming_updates) ==
        \* suspect and dead counts
        /\ MayBeRecordMemberCounts         
 
+MessageLoad(r, member) ==
+    Cardinality({
+        msg \in DOMAIN messages : 
+            /\ \/ msg.source = member
+               \/ msg.dest = member
+            /\ msg.round = r
+    })
+
 PrintStats ==
     /\ LET max_stats_round == MaxRound
            cfg_str == "," \o ToString(Cardinality(Member)) 
@@ -330,6 +338,8 @@ PrintStats ==
                         \o ","
        IN
         /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
+        /\ \A r \in 1..max_stats_round : 
+            \A member \in Member : PrintT("message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(MessageLoad(r, member)))
         /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : 
@@ -350,6 +360,14 @@ PrintStats ==
             ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
     /\ PrintT("converged")
     /\ ResetStats
+    
+MaybeEndSim ==
+    \/ /\ ForceRunToRound > 0
+       /\ IF \A member \in Member : round[member] <= ForceRunToRound 
+          THEN UNCHANGED sim_complete
+          ELSE sim_complete' = 1
+    \/ /\ ForceRunToRound <= 0
+       /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete    
     
 EndSim ==
     /\ sim_complete = 1
@@ -412,7 +430,7 @@ HandleGossip(member, gossip_source, source_incarnation, incoming_updates, sent_u
     LET merged == MergeGossip(member, gossip_source, source_incarnation, incoming_updates, sent_updates)
     IN /\ peer_states' = [peer_states EXCEPT ![member] = merged]
        /\ TLCDefer(RecordIncomingGossipStats(member, gossip_source, incoming_updates))
-       /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
+       /\ MaybeEndSim
 
 \* Updates the state and counters of a peer of the given member
 \* This is not called when an incarnation has changed, only a state change 
@@ -586,7 +604,7 @@ Expire(member, peer) ==
     /\ peer_states[member][peer].state = Suspect
     /\ round[member] - peer_states[member][peer].round > SuspectTimeout
     /\ UpdateState(member, peer, Dead)
-    /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
+    /\ MaybeEndSim
     /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round >>
 
 
@@ -792,6 +810,6 @@ Ensemble ==
 
 ============================================================================
 \* Modification History
-\* Last modified Mon Aug 31 04:14:31 PDT 2020 by jack
+\* Last modified Mon Aug 31 04:39:12 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
