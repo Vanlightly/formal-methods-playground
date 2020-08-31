@@ -34,11 +34,17 @@ EXTENDS Naturals, FiniteSets, Sequences, TLC, TLCExt, Integers
 
 CONSTANTS Member,                \* The set of possible members
           Nil,                   \* Empty numeric value
+          
           Alive,                 \* Numeric member state 
           Suspect,               \* Numeric member state
           Dead,                  \* Numeric member state
-          ProbeMessage,          \* Message type: probe 
+          
+          ProbeMessage,          \* Message type: probe
           AckMessage,            \* Message type: ack
+          ProbeRequestMessage,   \* Message type: probe request
+          ForwardedAckMessage,   \* Message type: indirect ack forwarded
+          
+          PeerGroupSize,         \* The number of peers to send probe requests when a direct probe fails
           DeadMemberCount,       \* The number of dead members the ensemble need to detect
           SuspectTimeout,        \* The number of failed probes before suspected node made dead
           DisseminationLimit,    \* The lambda log n value (the maximum number of times a given update can be piggybacked)
@@ -48,30 +54,26 @@ CONSTANTS Member,                \* The set of possible members
 \* The values of member states must be sequential
 ASSUME Alive > Suspect /\ Suspect > Dead
 ASSUME DeadMemberCount \in (Nat \ {0})
-ASSUME SuspectTimeout \in (Nat \ {0})
+ASSUME SuspectTimeout \in Nat
 ASSUME MaxUpdatesPerPiggyBack \in (Nat \ {0})
-
-
             
 VARIABLES \* actual state in the protocol
-          incarnation,       \* Member incarnation numbers
-          peer_states,       \* The known state that each member has on its peers
+          incarnation,          \* Member incarnation numbers
+          peer_states,          \* The known state that each member has on its peers
+          round,                \* Each member keeps track of which round of the protocol it is in
+          pending_direct_ack,   \* Each member keeps track of members it is pending a direct ack from
+          pending_indirect_ack, \* Each member keeps track of members it is pending an idirect ack from
           
           \* fair scheduling
-          round,            \* A per member counter for the number of probes sent. This is used
-                            \* to ensure that members send out probes at the same rate. It is not
-                            \* part of the actual state of the system, but a meta variable for this spec.
-          pending_req,      \* tracking pending requests per member to member
+          probe_ctr,
           
           \* messaging passing
-          requests,         \* a function of all requests and their responses       
-          responses_seen,   \* the set of all processed responses
-          
+          messages,         \* a function of all messages       
+                    
           \* to end simulation once convergence reached
           sim_complete
           
-vars == <<incarnation, peer_states, requests, pending_req, responses_seen, round, sim_complete>>
-message_vars == <<requests, pending_req, responses_seen>>
+vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_complete>>
 
 updates_pr_ctr(r) ==
     (r * 100)
@@ -101,9 +103,7 @@ ResetStats ==
         /\ TLCSet(suspect_states_ctr(r), 0)
         /\ TLCSet(dead_states_ctr(r), 0)
 
-----
-
-InitMemberVars ==
+Init ==
     LET dead_members == CHOOSE s \in SUBSET Member : Cardinality(s) = DeadMemberCount
     IN 
         /\ incarnation = [m \in Member |-> IF m \in dead_members THEN Nil ELSE 1]
@@ -113,58 +113,55 @@ InitMemberVars ==
                                                  round          |-> 1, 
                                                  disseminations |-> DisseminationLimit]]]
         /\ round = [m \in Member |-> 1]
+        /\ messages = [msg \in {} |-> 0]
+        /\ pending_direct_ack = [m \in Member |-> Nil]
+        /\ pending_indirect_ack = [m \in Member |-> Nil]
+        /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
         /\ sim_complete = 0
         /\ ResetStats
 
-InitMessageVars ==
-    /\ requests = [req \in {} |-> 0]
-    /\ pending_req = [m \in Member |-> [m1 \in Member |-> [pending |-> FALSE, count |-> 0]]]
-    /\ responses_seen = {}
+(*****************************************************)
+(*************** Messaging passing *******************)
+(*****************************************************)
 
-----
-(* HELPER Operators for message passing *)
+MessageDoesNotArrive(msg) ==
+    IF incarnation[msg.dest] = Nil THEN TRUE ELSE FALSE
 
 \* Send a request only if the request has already not been sent
-SendRequest(request) ==
-    /\ request \notin DOMAIN requests
-    /\ requests' = requests @@ (request :> [type |-> "-"])
+SendMessage(msg) ==
+    /\ msg \notin DOMAIN messages
+    /\ IF MessageDoesNotArrive(msg)
+       THEN messages' = messages @@ (msg :> 0)
+       ELSE messages' = messages @@ (msg :> 1)
+
+SendMessages(send_msgs) ==
+    /\ \A msg \in send_msgs : msg \notin DOMAIN messages
+    /\ messages' = messages @@ [msg \in send_msgs |-> IF MessageDoesNotArrive(msg) THEN 0 ELSE 1]
     
-\* Send a reply to a request, given the request has been sent
-SendReply(request, reply) ==
-    /\ request \in DOMAIN requests
-    /\ requests' = [requests EXCEPT ![request] = reply]
+\* Mark one message as processed and send a new message   
+ProcessedOneAndSendAnother(received_msg, send_msg) ==
+    /\ received_msg \in DOMAIN messages
+    /\ send_msg \notin DOMAIN messages
+    /\ messages[received_msg] >= 1
+    /\ IF MessageDoesNotArrive(send_msg)
+       THEN messages' = [messages EXCEPT ![received_msg] = 0] @@ (send_msg :> 0)
+       ELSE messages' = [messages EXCEPT ![received_msg] = 0] @@ (send_msg :> 1)
+   
+MessageProcessed(msg) ==
+    /\ msg \in DOMAIN messages
+    /\ messages[msg] >= 1
+    /\ messages' = [messages EXCEPT ![msg] = @ - 1]
 
-\* True when a request has not had a reply sent
-NotRepliedTo(request) ==
-    /\ request \in DOMAIN requests
-    /\ requests[request].type = "-"
+RegisterPendingDirectAck(member, peer) ==
+    /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = peer]
+    /\ probe_ctr' = [probe_ctr EXCEPT ![member][peer] = @ + 1]
 
-\* True when a response has been received and processed     
-NotProcessedResponse(response) ==
-    \/ response.type = "-"
-    \/ /\ response.type # "-"
-       /\ response \notin responses_seen
-    
-\* Signals that the response is processed so it is not processed again
-ResponseProcessed(response) ==
-    responses_seen' = responses_seen \union { response }
+RegisterReceivedDirectAck(member) ==
+    pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = Nil]
 
-\* Signals that the request failed due to whatever reason    
-RequestFailed(request) ==
-    /\ request \in DOMAIN requests
-    /\ requests[request].type = "-"
-    /\ requests' = [requests EXCEPT ![request].type = "failed"]
-
-SetAsPending(member, peer) ==
-    pending_req' = [pending_req EXCEPT ![member][peer] = 
-                            [pending |-> TRUE, count |-> @.count + 1]]
-
-SetAsNotPending(member, peer) ==
-    pending_req' = [pending_req EXCEPT ![member][peer] = 
-                            [pending |-> FALSE, count |-> @.count]]
-
-(* HELPER Operators to determine if the ensemble has converged 
-   on the real state of the system *)
+(*****************************************************)
+(*************** Helper operators ********************)
+(*****************************************************)
 
 MaxRound ==
     LET highest == CHOOSE m1 \in Member :
@@ -332,7 +329,6 @@ PrintStats ==
                         \o "," \o ToString(MaxRound)
                         \o ","
        IN
-        /\ \A m \in Member : PrintT("members," \o ToString(m) \o "," \o ToString(Cardinality(Member)))
         /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
         /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
@@ -359,7 +355,7 @@ EndSim ==
     /\ sim_complete = 1
     /\ TLCDefer(PrintStats)
     /\ sim_complete' = 2
-    /\ UNCHANGED <<incarnation, peer_states, requests, pending_req, responses_seen, round>>    
+    /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round>>    
            
 (************************************************************************) 
 (******************** INCOMING GOSSIP ***********************************)
@@ -456,37 +452,43 @@ IsValidProbeTarget(member, peer) ==
        \/ /\ peer_states[member][peer].state = Suspect
           /\ round[member] - peer_states[member][peer].round <= SuspectTimeout
 
-\* 'round' balances the probes across the ensemble more or less
-\* 'pending_req' ensures we don't have more than one pending request for this source at a time
+\* This is necessary for statistics simulation to ensure that all members are
+\* sending out probes at the same rate and stay within one round of each other
+\* 'probe_ctr' ensures that we are balancing our probes evenly across peers 
+\* 'round' keeps all members within one round of each other
 IsFairlyScheduled(member, peer) ==
-    /\ \A m \in Member : pending_req[member][m].pending = FALSE
     /\ \A m \in Member : 
          IF IsValidProbeTarget(member, m) 
-         THEN pending_req[member][peer].count <= pending_req[member][m].count
+         THEN probe_ctr[member][peer] <= probe_ctr[member][m]
          ELSE TRUE
     /\ \A m1 \in Member : 
         \/ incarnation[m1] = Nil
         \/ /\ incarnation[m1] # Nil
            /\ round[member] <= round[m1]
 
-Probe(member, peer) ==
+\* The sending of a direct probe is the beginning of a new protocol period and so we need
+\* to ensure some things TODO
+SendDirectProbe(member, peer) ==
     /\ member # peer
     /\ sim_complete = 0
-    /\ incarnation[member] # Nil        \* The member is alive
-    /\ HasNoMembersToExpire(member)     \* Only send a probe if we have no pending expiries
-    /\ IsValidProbeTarget(member, peer) \* The peer is valid (not dead for example)
-    /\ IsFairlyScheduled(member, peer)  \* We aim to make the rate probe sending more or less balanced
+    /\ incarnation[member] # Nil            \* The member is alive
+    /\ pending_indirect_ack[member] = Nil   \* The member is not waiting on a direct ack
+    /\ pending_direct_ack[member] = Nil     \* The member is not waiting on an indirect ack
+    /\ HasNoMembersToExpire(member)         \* Only send a probe if we have no pending expiries
+    /\ IsValidProbeTarget(member, peer)     \* The peer is valid (the member think it's not dead for example)
+    /\ IsFairlyScheduled(member, peer)      \* We aim to make the rate probe sending more or less balanced
     /\ LET gossip_to_send == SelectOutgoingGossip(member, <<>>)
        IN
-        /\ SendRequest([type    |-> ProbeMessage,
-                        source  |-> member,
-                        dest    |-> peer,
-                        round   |-> round[member],
-                        payload |-> peer_states[member][peer],
-                        gossip  |-> gossip_to_send])
+        /\ SendMessage([type         |-> ProbeMessage,
+                        source       |-> member,
+                        dest         |-> peer,
+                        round        |-> round[member],
+                        on_behalf_of |-> Nil,
+                        payload      |-> peer_states[member][peer],
+                        gossip       |-> gossip_to_send])
         /\ IncrementPiggybackCount(member, gossip_to_send)
-        /\ SetAsPending(member, peer)
-        /\ UNCHANGED <<incarnation, round, responses_seen, sim_complete >>
+        /\ RegisterPendingDirectAck(member, peer)
+        /\ UNCHANGED <<incarnation, pending_indirect_ack, round, sim_complete >>
 
 
         
@@ -508,32 +510,35 @@ send an ack.
 *)
 
 \* Send an ack and piggyback gossip if any to send
-SendAck(request, payload, piggyback_gossip) ==
-    SendReply(request, [type       |-> AckMessage,
-                        source     |-> request.dest,
-                        dest       |-> request.source,
-                        dest_round |-> request.round,
-                        payload    |-> payload,
-                        gossip     |-> piggyback_gossip])
+SendAck(probe, payload, piggyback_gossip) ==
+    ProcessedOneAndSendAnother(probe, 
+                       [type         |-> AckMessage,
+                        source       |-> probe.dest,
+                        dest         |-> probe.source,
+                        round        |-> probe.round,
+                        on_behalf_of |-> probe.on_behalf_of,
+                        payload      |-> payload,
+                        gossip       |-> piggyback_gossip])
  
 ReceiveProbe ==
     /\ sim_complete = 0
-    /\ \E r \in DOMAIN requests :
-        /\ NotRepliedTo(r)
-        /\ incarnation[r.dest] # Nil
-        /\ LET send_gossip == SelectOutgoingGossip(r.dest, r.gossip)
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = ProbeMessage
+        /\ messages[msg] >= 1
+        /\ incarnation[msg.dest] # Nil
+        /\ LET send_gossip == SelectOutgoingGossip(msg.dest, msg.gossip)
            IN 
-                /\ \/ /\ r.payload.incarnation > incarnation[r.dest]
-                      /\ incarnation' = [incarnation EXCEPT ![r.dest] = r.payload.incarnation + 1]
-                      /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], send_gossip)
-                   \/ /\ r.payload.state = Suspect
-                      /\ incarnation' = [incarnation EXCEPT ![r.dest] = incarnation[r.dest] + 1]
-                      /\ SendAck(r, [incarnation |-> incarnation'[r.dest]], send_gossip)
-                   \/ /\ r.payload.incarnation <= incarnation[r.dest]
-                      /\ SendAck(r, [incarnation |-> incarnation[r.dest]], send_gossip)
+                /\ \/ /\ msg.payload.incarnation > incarnation[msg.dest]
+                      /\ incarnation' = [incarnation EXCEPT ![msg.dest] = msg.payload.incarnation + 1]
+                      /\ SendAck(msg, [incarnation |-> incarnation'[msg.dest]], send_gossip)
+                   \/ /\ msg.payload.state = Suspect
+                      /\ incarnation' = [incarnation EXCEPT ![msg.dest] = incarnation[msg.dest] + 1]
+                      /\ SendAck(msg, [incarnation |-> incarnation'[msg.dest]], send_gossip)
+                   \/ /\ msg.payload.incarnation <= incarnation[msg.dest]
+                      /\ SendAck(msg, [incarnation |-> incarnation[msg.dest]], send_gossip)
                       /\ UNCHANGED <<incarnation>>
-                /\ HandleGossip(r.dest, r.source, r.payload.incarnation, r.gossip, send_gossip) 
-    /\ UNCHANGED <<round, responses_seen, pending_req >>
+                /\ HandleGossip(msg.dest, msg.source, msg.payload.incarnation, msg.gossip, send_gossip) 
+    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr >>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveAck ********************************)
@@ -548,51 +553,23 @@ node, update the member's state and add an update for gossip.
 *)
 ReceiveAck ==
     /\ sim_complete = 0
-    /\ \E r \in DOMAIN requests :
-        LET response == requests[r]
-        IN
-            /\ NotProcessedResponse(response)
-            /\ response.type = AckMessage
-            /\ round' = [round EXCEPT ![response.dest] = @ + 1]
-            /\ HandleGossip(response.dest, 
-                            response.source, 
-                            response.payload.incarnation, 
-                            response.gossip, 
-                            <<>>)
-            /\ SetAsNotPending(r.source, r.dest)
-            /\ ResponseProcessed(response)
-            /\ UNCHANGED <<incarnation, requests>>
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = AckMessage
+        /\ messages[msg] >= 1
+        /\ msg.on_behalf_of = Nil
+        /\ msg.round = round[msg.dest]
+        /\ round' = [round EXCEPT ![msg.dest] = @ + 1]
+        /\ HandleGossip(msg.dest, 
+                        msg.source, 
+                        msg.payload.incarnation, 
+                        msg.gossip, 
+                        <<>>)
+        /\ RegisterReceivedDirectAck(msg.dest)
+        /\ MessageProcessed(msg)
+        /\ UNCHANGED <<incarnation, pending_indirect_ack, probe_ctr>>
 
 (************************************************************************) 
-(******************** ACTION: ProbeFails ********************************)
-(************************************************************************)
-
-(* Notes
-Handles a failed probe.
-If the probe request matches the local incarnation for the probe destination and the local
-state for the destination is Alive or Suspect, update the state to Suspect and decrement the timeout counter.
-Increments this member's round amd untracks the original request - required for fair scheduling
-*)
-ProbeFails ==
-    /\ sim_complete = 0
-    /\ \E r \in DOMAIN requests :
-        /\ r.type = ProbeMessage
-        /\ NotRepliedTo(r)
-        /\ incarnation[r.dest] = Nil
-        /\ IF r.payload.incarnation > 0
-                /\ r.payload.incarnation = peer_states[r.source][r.dest].incarnation
-                /\ peer_states[r.source][r.dest].state = Alive
-           THEN
-                UpdateState(r.source, r.dest, Suspect)
-           ELSE UNCHANGED << peer_states >>
-        /\ round' = [round EXCEPT ![r.source] = @ + 1]
-        /\ TLCDefer(MayBeRecordMemberCounts)
-        /\ SetAsNotPending(r.source, r.dest)
-        /\ RequestFailed(r)
-        /\ UNCHANGED <<incarnation, responses_seen, sim_complete>>
-
-(************************************************************************) 
-(******************** ACTION: Expire ********************************)
+(******************** ACTION: Expire ************************************)
 (************************************************************************)
 
 (* Notes
@@ -610,43 +587,164 @@ Expire(member, peer) ==
     /\ round[member] - peer_states[member][peer].round > SuspectTimeout
     /\ UpdateState(member, peer, Dead)
     /\ IF WillBeConverged THEN sim_complete' = 1 ELSE UNCHANGED sim_complete
-    /\ UNCHANGED <<incarnation, requests, pending_req, responses_seen, round >>
+    /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round >>
 
-(*
-***************** NOT CURRENTLY USED *****************
-Adds a member to the cluster
-* 'id' is the identifier of the member to add
-If the member is not present in the state history:
-* Initialize the member's incarnation to 1
-* Initialize the member's states for all known members to incarnation: 0, state: Dead to allow heartbeats
-* Enqueue an update to notify peers of the member's existence
-Mod 1: No history variable
-*)
-AddMember(id) ==
-    /\ incarnation[id] = Nil
-    /\ incarnation' = [incarnation EXCEPT ![id] = 1]
-    /\ peer_states' = [peer_states EXCEPT ![id] = [i \in DOMAIN peer_states |-> [incarnation |-> 0, state |-> Dead, round |-> 1]]]
-    /\ UNCHANGED <<requests, pending_req, responses_seen, round, sim_complete>>
 
-(*
-***************** NOT CURRENTLY USED *****************
-Removes a member from the cluster
-* 'id' is the identifier of the member to remove
-Alter the domain of 'incarnation', 'members', and 'updates' to remove the member's
-volatile state. We retain only the in-flight messages and history for model checking.
-*)
-RemoveMember(id) ==
-    /\ incarnation[id] # Nil
-    /\ incarnation' = [incarnation EXCEPT ![id] = Nil]
-    /\ peer_states' = [peer_states EXCEPT ![id] = [j \in Member |-> [incarnation |-> 0, state |-> Nil, round |-> 1]]]
-    /\ UNCHANGED <<requests, pending_req, responses_seen, round, sim_complete>>
+(************************************************************************) 
+(******************** ACTION: DirectProbeFails **************************)
+(************************************************************************)
 
-----
+ProbeRequestMessages(member, peers, failed_peer, gossip_to_send) ==
+    {
+        [type    |-> ProbeRequestMessage,
+         source  |-> member,
+         dest    |-> peer,
+         target  |-> failed_peer,
+         payload |-> peer_states[member][peer],
+         round   |-> round[member],
+         gossip  |-> gossip_to_send] : peer \in peers
+    }
 
-\* Initial state
-Init ==
-    /\ InitMessageVars
-    /\ InitMemberVars
+EligiblePeerGroups(member) ==
+    LET valid_peers == { peer \in Member : IsValidProbeTarget(member, peer) }
+    IN IF Cardinality(valid_peers) <= PeerGroupSize THEN { valid_peers }
+       ELSE 
+            { peer_group \in SUBSET valid_peers :          
+                Cardinality(peer_group) = PeerGroupSize }
+
+SendProbeRequests(failed_probe) ==
+    LET member      == failed_probe.source
+        failed_peer == failed_probe.dest
+    IN
+        \E peer_group \in EligiblePeerGroups(member) :
+           LET gossip_to_send == SelectOutgoingGossip(member, <<>>)
+           IN
+            /\ SendMessages(ProbeRequestMessages(member, peer_group, failed_peer, gossip_to_send))
+            /\ IncrementPiggybackCount(member, gossip_to_send)
+            /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = Nil]
+            /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![member] = failed_peer]
+
+DirectProbeFails ==
+    /\ sim_complete = 0
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = ProbeMessage
+        /\ messages[msg] <= 0
+        /\ msg.round = round[msg.source]
+        /\ msg.on_behalf_of = Nil
+        /\ pending_direct_ack[msg.source] = msg.dest
+        /\ ~\E ack \in DOMAIN messages : 
+            /\ ack.type = AckMessage
+            /\ ack.dest = msg.source
+            /\ ack.round = msg.round
+            /\ messages[ack] >= 1
+        /\ SendProbeRequests(msg)
+        /\ UNCHANGED <<incarnation, probe_ctr, round, sim_complete>>
+
+(************************************************************************) 
+(******************** ACTION: ReceiveProbeRequest ***********************)
+(************************************************************************)
+
+ReceiveProbeRequest ==
+    /\ sim_complete = 0
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = ProbeRequestMessage
+        /\ messages[msg] >= 1
+        /\ LET gossip_to_send == SelectOutgoingGossip(msg.dest, <<>>)
+           IN
+            /\ ProcessedOneAndSendAnother(msg,
+                           [type         |-> ProbeMessage,
+                            source       |-> msg.dest,
+                            dest         |-> msg.target,
+                            round        |-> msg.round,
+                            on_behalf_of |-> msg.source,
+                            payload      |-> peer_states[msg.dest][msg.target],
+                            gossip       |-> gossip_to_send])
+            /\ HandleGossip(msg.dest, msg.source, msg.payload.incarnation, msg.gossip, gossip_to_send)
+            /\ UNCHANGED <<incarnation, pending_direct_ack, pending_indirect_ack, probe_ctr, round >>
+
+
+(************************************************************************) 
+(******************** ACTION: ReceiveProbeRequestAck ********************)
+(************************************************************************)
+
+ReceiveProbeRequestAck ==
+    /\ sim_complete = 0
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = AckMessage
+        /\ msg.on_behalf_of # Nil
+        /\ messages[msg] >= 1
+        /\ HandleGossip(msg.dest, 
+                        msg.source, 
+                        msg.payload.incarnation, 
+                        msg.gossip, 
+                        <<>>)
+        /\ ProcessedOneAndSendAnother(msg, [msg EXCEPT !.type = ForwardedAckMessage,
+                                                       !.dest = msg.on_behalf_of])
+        /\ UNCHANGED <<incarnation>>
+
+(************************************************************************) 
+(******************** ACTION: ReceiveForwardedAck ***********************)
+(************************************************************************)
+
+ReceiveForwardedAck ==
+    /\ sim_complete = 0
+    /\ \E msg \in DOMAIN messages :
+        /\ msg.type = ForwardedAckMessage
+        /\ messages[msg] >= 1
+        /\ HandleGossip(msg.dest, 
+                        msg.source, 
+                        msg.payload.incarnation, 
+                        msg.gossip, 
+                        <<>>)
+        /\ IF pending_indirect_ack[msg.dest] # Nil 
+           THEN /\ round' = [round EXCEPT ![msg.dest] = @ + 1]
+                /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![msg.dest] = Nil] 
+           ELSE UNCHANGED << round, pending_direct_ack, probe_ctr >>
+        /\ MessageProcessed(msg)
+        /\ UNCHANGED <<incarnation>>
+
+
+(************************************************************************) 
+(******************** ACTION: ProbeRequestFails *************************)
+(************************************************************************)
+
+IndirectProbeChainBroken(member) ==
+    LET round_of_chain == round[member]
+    IN
+        \A msg \in DOMAIN messages :
+            IF /\ msg.round = round_of_chain
+               /\ \/ /\ msg.type = ProbeRequestMessage 
+                     /\ msg.source = member
+                  \/ /\ msg.type = ProbeMessage
+                     /\ msg.on_behalf_of = member
+                  \/ /\ msg.type = AckMessage
+                     /\ msg.on_behalf_of = member
+                  \/ /\ msg.type = ForwardedAckMessage
+                     /\ msg.dest = member
+            THEN
+                messages[msg] <= 0
+            ELSE
+                TRUE
+
+ProbeRequestFails ==
+    /\ sim_complete = 0
+    /\ \E member \in Member :
+        /\ pending_indirect_ack[member] # Nil
+        /\ IndirectProbeChainBroken(member)
+        /\ LET pr == CHOOSE msg \in DOMAIN messages :
+                        /\ msg.type = ProbeRequestMessage
+                        /\ msg.source = member
+                        /\ msg.round = round[member]
+           IN
+                /\ IF pr.payload.incarnation > 0
+                        /\ pr.payload.incarnation = peer_states[pr.source][pr.target].incarnation
+                        /\ peer_states[member][pr.target].state = Alive
+                   THEN
+                        UpdateState(member, pr.target, Suspect)
+                   ELSE UNCHANGED << peer_states >>
+                /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![member] = Nil]
+                /\ round' = [round EXCEPT ![member] = @ + 1]
+                /\ UNCHANGED <<incarnation, messages, pending_direct_ack, probe_ctr, sim_complete>>
 
 (* 
 Next state predicate
@@ -655,20 +753,31 @@ eventually deadlock when converged as we want the simulation
 to stop at that point and print out the statistics
 *)
 Next ==
-    \/ \E i, j \in Member : 
-        \/ Probe(i, j)
-        \/ Expire(i, j)
+    \/ \E member, peer \in Member : 
+        \/ SendDirectProbe(member, peer)
+        \/ Expire(member, peer)
     \/ ReceiveProbe
     \/ ReceiveAck
-    \/ ProbeFails
+    \/ DirectProbeFails
+    \/ ReceiveProbeRequest
+    \/ ReceiveProbeRequestAck
+    \/ ReceiveForwardedAck
+    \/ ProbeRequestFails
     \/ EndSim
-    
-(* Remnants of original Next formula that is not currently required.
-   Probablistic dropping of messages may be added at some point. *)
-    \* \/ \E i \in Member : RemoveMember(i)
-    \* \/ \E i \in Member : AddMember(i)
-    \* \/ \E m \in DOMAIN messages : DuplicateMessage(m)
-    \* \/ \E m \in DOMAIN messages : DropMessage(m)
+
+MemberOrNil ==
+    Member \union {Nil}
+
+TypeOK ==
+    /\ incarnation \in [Member -> Nat \union {Nil}]
+    /\ peer_states \in [Member -> [Member -> [incarnation    : Nat, 
+                                              state          : { Alive, Suspect, Dead }, 
+                                              round          : Nat, 
+                                              disseminations : 0..DisseminationLimit]]]
+    /\ round \in [Member -> Nat]
+    /\ pending_direct_ack \in [Member -> MemberOrNil]
+    /\ pending_indirect_ack \in [Member -> MemberOrNil]
+    /\ probe_ctr \in [Member -> [Member -> Nat]]
 
 Inv ==
     IF (~ ENABLED Next) THEN
@@ -678,12 +787,11 @@ Inv ==
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
-----------------------------------------------------------------------------
-
-TestMember == 1..10
+Ensemble ==
+    1..20
 
 ============================================================================
 \* Modification History
-\* Last modified Thu Aug 27 04:11:44 PDT 2020 by jack
+\* Last modified Mon Aug 31 04:14:31 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
