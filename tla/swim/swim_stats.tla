@@ -126,7 +126,13 @@ dead_ctr(r) ==
     (r * 100) + 4
     
 dead_states_ctr(r) ==
-    (r * 100) + 5     
+    (r * 100) + 5    
+    
+alive_ctr(r) ==
+    (r * 100) + 6
+    
+alive_states_ctr(r) ==
+    (r * 100) + 7
     
 
 ResetStats(max_round) ==
@@ -135,8 +141,10 @@ ResetStats(max_round) ==
         /\ TLCSet(eff_updates_pr_ctr(r), 0)
         /\ TLCSet(suspect_ctr(r), 0)
         /\ TLCSet(dead_ctr(r), 0)
+        /\ TLCSet(alive_ctr(r), 0)
         /\ TLCSet(suspect_states_ctr(r), 0)
         /\ TLCSet(dead_states_ctr(r), 0)
+        /\ TLCSet(alive_states_ctr(r), 0)
 
 UnknownStateRecord ==
     [incarnation    |-> 0, 
@@ -244,8 +252,8 @@ LiveMembers ==
     
 \* The real state being either dead or alive. The real state of a member 
 \* cannot be "suspected".
-RealStateOfMember(member) ==
-    IF incarnation[member] = Nil THEN DeadState ELSE AliveState
+RealStateOfMember(member, nil, dead_state, alive_state) ==
+    IF incarnation[member] = nil THEN dead_state ELSE alive_state
 
 \* TRUE when:
 \* for each member, it's live peers all agree on the same thing, specifically that:
@@ -254,18 +262,18 @@ RealStateOfMember(member) ==
 \* SWIM does not prevent false positives (just mitigates them)
 \* and makes no provision for coming back from the dead - once you a member thinks you're dead 
 \* they cannot be convinced otherwise.
-IsConverged(inc, pstates) ==
+IsConverged(inc, pstates, nil, dead_state, alive_state) ==
     \A member \in Member :
         \A peer \in Member :
-            \/ inc[peer] = Nil
+            \/ inc[peer] = nil
             \/ member = peer
             \/ /\ member # peer
-               /\ \/ pstates[peer][member].state = RealStateOfMember(member)
+               /\ \/ pstates[peer][member].state = RealStateOfMember(member, nil, dead_state, alive_state)
                   \/ pstates[peer][member].state = DeadState                      
 
 
 WillBeConverged ==
-    IsConverged(incarnation, peer_states')
+    IsConverged(incarnation, peer_states', Nil, DeadState, AliveState)
 
 \* Returns TRUE or FALSE as to whether an individual peer state is new for this member
 \* It is new only if:
@@ -331,8 +339,10 @@ MayBeRecordMemberCounts ==
             IN
                 /\ TLCSet(suspect_ctr(r), NextStateMemberCount(SuspectState))
                 /\ TLCSet(dead_ctr(r), NextStateMemberCount(DeadState))
+                /\ TLCSet(alive_ctr(r), NextStateMemberCount(AliveState))
                 /\ TLCSet(suspect_states_ctr(r), NextStateStateCount(SuspectState))
                 /\ TLCSet(dead_states_ctr(r), NextStateStateCount(DeadState))
+                /\ TLCSet(alive_states_ctr(r), NextStateStateCount(AliveState))
         ELSE TRUE
 
 RecordIncomingGossipStats(member, gossip_source, incoming_peer_states, end_of_round) ==
@@ -390,6 +400,10 @@ PrintStats ==
             IF r = max_stats_round 
             THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(DeadState)))
             ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
+        /\ \A r \in 1..max_stats_round :
+            IF r = max_stats_round 
+            THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
+            ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
         /\ PrintT("converged")
         /\ ResetStats(max_stats_round)
     
@@ -403,7 +417,7 @@ MaybeEndSim ==
     
 EndSim ==
     /\ \/ sim_complete = 1
-       \/ sim_complete = 0 /\ IsConverged(incarnation, peer_states)
+       \/ sim_complete = 0 /\ IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)
     /\ IF PrintStatsOnDeadlock = TRUE THEN PrintStats ELSE TRUE
     /\ sim_complete' = 2
     /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round>>
@@ -492,43 +506,6 @@ NewAliveMemberRecord(incarnation_number, member_round) ==
      state          |-> AliveState, 
      disseminations |-> 0, 
      round          |-> member_round]
-
-(*
-\* updates the state of a member's peers based on incoming and outgoing gossip
-\* If member's incarnation for the gossip source is stale then update it
-\* Increment dissemination counters of outgoing gossip
-\* Replace any peer state that is stale
-MergeGossip(member, gossip_source, source_incarnation, incoming_updates, sent_updates) ==
-    [peer \in Member |-> 
-        IF peer = member 
-        THEN peer_states[member][member] \* it holds no data about itself 
-        ELSE 
-            IF peer = gossip_source
-            THEN IF peer_states[member][gossip_source].incarnation < source_incarnation
-                 THEN NewAliveMemberRecord(source_incarnation, round[member])
-                 ELSE peer_states[member][gossip_source]
-            ELSE
-                LET is_in_gossip == peer \in DOMAIN incoming_updates
-                    is_in_sent   == peer \in DOMAIN sent_updates
-                IN    
-                    IF is_in_gossip
-                    THEN IF IsNewInformation(member, peer, incoming_updates[peer])
-                         THEN ResetCountersOfRecord(incoming_updates[peer], round[member])
-                         ELSE IF is_in_sent
-                              THEN [peer_states[member][peer] EXCEPT !.disseminations = @ + 1]
-                              ELSE peer_states[member][peer]
-                    ELSE IF is_in_sent
-                         THEN [peer_states[member][peer] EXCEPT !.disseminations = @ + 1]
-                         ELSE peer_states[member][peer]]
-
-\* Merges incoming gossip with existing state
-\* increments dissemination counters of sent updates
-\* records statistics
-HandleGossip(member, gossip_source, source_incarnation, incoming_updates, sent_updates) ==
-    LET merged == MergeGossip(member, gossip_source, source_incarnation, incoming_updates, sent_updates)
-    IN /\ peer_states' = [peer_states EXCEPT ![member] = merged]
-       /\ TLCDefer(RecordIncomingGossipStats(member, gossip_source, incoming_updates))
-       /\ MaybeEndSim*)
 
 MergeGossipWithCurrentState(member, gossip_source, source_incarnation, incoming_peer_states) ==
     [peer \in Member |-> 
@@ -1085,21 +1062,21 @@ TypeOK ==
     /\ pending_direct_ack \in [Member -> MemberOrNil]
     /\ pending_indirect_ack \in [Member -> MemberOrNil]
     /\ probe_ctr \in [Member -> [Member -> Nat]]
-    /\ TLCGet("level") < 50
 
 Inv ==
-    IF (~ ENABLED Next) THEN
+    ~IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)
+    (*IF (~ ENABLED Next) THEN
         sim_complete = 2
     ELSE
-        TRUE
+        TRUE*)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 Ensemble ==
-    1..10
+    1..20
 
 ============================================================================
 \* Modification History
-\* Last modified Fri Sep 04 08:48:01 PDT 2020 by jack
+\* Last modified Mon Sep 07 01:59:00 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman

@@ -9,6 +9,66 @@ import tlc2.value.impl.Value;
 public class swim_stats {
 
 	/*
+	IsConverged(inc, pstates, nil, dead_state, alive_state) ==
+		\A member \in Member :
+			\A peer \in Member :
+				\/ inc[peer] = nil
+				\/ member = peer
+				\/ /\ member # peer
+				   /\ \/ pstates[peer][member].state = RealStateOfMember(member, nil, dead_state, alive_state)
+					  \/ pstates[peer][member].state = DeadState
+	 */
+	public static Value IsConverged(final FcnRcdValue inc,
+									final FcnRcdValue tps,
+									final IntValue nil,
+									final IntValue deadState,
+									final IntValue aliveState) {
+		assert inc.isNormalized();
+		assert tps.isNormalized();
+
+		final Value[] domain = tps.domain;
+		for (int member = 0; member < domain.length; member++) {
+			final int realState = inc.values[member].equals(nil) ? deadState.val : aliveState.val;
+			int real = 0;
+			int dead = 0;
+			int livePeers = 0;
+
+			for (int peer = 0; peer < domain.length; peer++) {
+				if(member == peer)
+					continue;
+
+				final IntValue incarn = (IntValue) inc.values[peer];
+				if(incarn.equals(nil))
+					continue;
+
+				livePeers++;
+
+				final FcnRcdValue frv = (FcnRcdValue) tps.values[peer];
+				final RecordValue rv = (RecordValue) frv.values[member];
+				int stateIndex = 0;
+				for (int n=0; n< rv.names.length; n++) {
+					if(rv.names[n].equals("state")) {
+						stateIndex = n;
+						break;
+					}
+				}
+
+				final IntValue s = (IntValue) rv.values[stateIndex];
+				if (s.val == realState)
+					real++;
+				else if (s.val == deadState.val)
+					dead++;
+			}
+
+			boolean convergedForMember = (real == livePeers && dead == 0) || (real == 0 && dead == livePeers);
+			if(!convergedForMember)
+				return new BoolValue(false);
+		}
+
+		return new BoolValue(true);
+	}
+
+	/*
 StateCount(state, target_peer_states) ==
     LET pairs == { s \in SUBSET Member : Cardinality(s) = 2 }
     IN
@@ -24,8 +84,7 @@ StateCount(state, target_peer_states) ==
 	 */
 	public static Value StateCount(final IntValue state, final FcnRcdValue tps) {
 		assert tps.isNormalized();
-		assert tps.isNormalized();
-		
+
 		int lowToHigh = 0;
 		int highToLow = 0;
 		
