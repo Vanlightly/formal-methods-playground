@@ -6,6 +6,9 @@ import tlc2.value.impl.ModelValue;
 import tlc2.value.impl.RecordValue;
 import tlc2.value.impl.Value;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class swim_stats {
 
 	/*
@@ -87,7 +90,7 @@ StateCount(state, target_peer_states) ==
 
 		int lowToHigh = 0;
 		int highToLow = 0;
-		
+
 		final Value[] domain = tps.domain;
 		for (int i = 0; i < domain.length; i++) {
 			final IntValue di = (IntValue) domain[i];
@@ -134,15 +137,15 @@ StateCount(state, target_peer_states) ==
 
 	/*
 MemberCount(state, target_peer_states) ==
-    Cardinality({dest \in Member : 
+    Cardinality({dest \in Member :
         \E source \in Member :
             target_peer_states[source][dest].state = state})
 	 */
 	public static Value MemberCount(final IntValue state, final FcnRcdValue tps) {
 		assert tps.isNormalized();
-		
+
 		int count = 0;
-		
+
 		final Value[] domain = tps.domain;
 		for (int member = 0; member < domain.length; member++) {
 			for (int peer = 0; peer < domain.length; peer++) {
@@ -165,43 +168,117 @@ MemberCount(state, target_peer_states) ==
 				}
 			}
 		}
-		
+
 		return IntValue.gen(count);
 	}
 
 
 	/*
-IsNewRoundTransitionStep(i, r1, r2, nil, mem) ==
-    /\ \E m1, m2 \in mem: i[m1] # nil /\ i[m2] # nil /\ r1[m1] # r1[m2] 
-    /\ \A m3, m4 \in mem:
-    	\/ i[m3] = Nil
-    	\/ i[m4] = Nil
-    	\/ /\ i[m3] # nil
-    	   /\ i[m4] # nil
-    	   /\ r2[m3] = r2[m4]
+MemberThinksEveryoneIsDead(member, mem, pstates, dead_state) ==
+	\A m1 \in mem : m1 = member \/ pstates[member][m1].state = dead_state
+
+IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
+    /\ \E m \in mem : r1[m] # r2[m]
+    /\ \/ Cardinality({m \in mem : ~MemberThinksEveryoneIsDead(m, mem, pstates, dead_state)}) = 1
+       \/ /\ \E m1, m2 \in mem: /\ inc[m1] # nil
+                                /\ inc[m2] # nil
+                                /\ ~MemberThinksEveryoneIsDead(m1, mem, pstates, dead_state)
+                                /\ ~MemberThinksEveryoneIsDead(m2, mem, pstates, dead_state)
+                                /\ r1[m1] # r1[m2]
+          /\ \A m3, m4 \in mem:
+            \/ inc[m3] = Nil
+            \/ inc[m4] = Nil
+            \/ MemberThinksEveryoneIsDead(m3, mem, pstates, dead_state)
+            \/ MemberThinksEveryoneIsDead(m4, mem, pstates, dead_state)
+            \/ /\ inc[m3] # nil
+               /\ inc[m4] # nil
+               /\ ~MemberThinksEveryoneIsDead(m3, mem, pstates, dead_state)
+               /\ ~MemberThinksEveryoneIsDead(m4, mem, pstates, dead_state)
+               /\ r2[m3] = r2[m4]
 	 */
-	public static Value IsNewRoundTransitionStep(final FcnRcdValue i, final FcnRcdValue r1, final FcnRcdValue r2,
-			final ModelValue nil, final IntervalValue mem) {
-		assert i.isNormalized();
+	public static Value IsNewRoundTransitionStep(final FcnRcdValue inc,
+												 final FcnRcdValue r1,
+												 final FcnRcdValue r2,
+												 final IntValue nil,
+												 final IntervalValue mem,
+												 final FcnRcdValue pstates,
+												 final IntValue deadState) {
+		assert inc.isNormalized();
 		assert r2.isNormalized();
 		assert r1.isNormalized();
 		assert mem.isNormalized();
-		assert r1.size() == r2.size() && mem.size() == r1.size();
+		assert r1.size() == r2.size() && mem.size() == r1.size() && pstates.size() == r1.size();
 
 		BoolValue res = BoolValue.ValFalse;
-		
+		int size = mem.size();
+
+		// check 1 - was there a round that was completed at all? If not then cannot be a transition
+		boolean atLeastOneRoundComplete = false;
+		for(int i=0; i<size; i++) {
+			if (!r1.values[i].equals(r2.values[i])) {
+				atLeastOneRoundComplete = true;
+			}
+		}
+
+		if(!atLeastOneRoundComplete)
+			return BoolValue.ValFalse;
+
+		// Check 2 - Is there just a single member left that does not believe everyone else
+		//           is dead and there was a round completed (we know because of check 1)
+		//           then this is a transition
+		int thinkAllIsDeadCount = 0;
+		Map<Integer, Boolean> deadBeliefs = new HashMap<>();
+		for(int i=0; i<size; i++) {
+			final FcnRcdValue frv = (FcnRcdValue) pstates.values[i];
+			boolean foundNotDead = false;
+			for(int j=0; j<size; j++) {
+				if( i==j)
+					continue;
+
+				final RecordValue rv = (RecordValue) frv.values[j];
+				int stateIndex = 0;
+				for (int n=0; n< rv.names.length; n++) {
+					if(rv.names[n].equals("state")) {
+						stateIndex = n;
+						break;
+					}
+				}
+
+				final IntValue s = (IntValue) rv.values[stateIndex];
+				if (s.val != deadState.val) {
+					foundNotDead = true;
+					break;
+				}
+			}
+
+			if(foundNotDead) {
+				deadBeliefs.put(i, false);
+			} else {
+				thinkAllIsDeadCount++;
+				deadBeliefs.put(i, true);
+			}
+		}
+
+		if(thinkAllIsDeadCount == size-1) {
+			return BoolValue.ValTrue;
+		}
+
+		// check 3 - Check if in the next round (r2) that all valid members have the same round
+		//			 but that in the current round (r1) that there is one member that has a different round
+		//			 this indicates that there was a round completed that led to a transition.
+		//           Valid members are those that are alive and do not believe all other members are dead
+
 		// use two pointer technique to jump over dead members, that can exist anywhere,
 		// not just at the beginning.
-     	int m1 = 0;
+		int m1 = 0;
 		int m2 = 1;
-		int size = mem.size();
 		while (m1 < size && m2 < size) {
-			if(i.values[m1].equals(nil)) {
+			if(inc.values[m1].equals(nil) || deadBeliefs.get(m1) == true) {
 				m1++;
 				continue;
 			}
 
-			if(m2 <= m1 || i.values[m2].equals(nil)) {
+			if(m2 <= m1 || inc.values[m2].equals(nil) || deadBeliefs.get(m2) == true) {
 				m2++;
 				continue;
 			}

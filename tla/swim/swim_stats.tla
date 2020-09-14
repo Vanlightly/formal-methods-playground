@@ -99,7 +99,6 @@ VARIABLES \* actual state in the protocol
           round,                \* Each member keeps track of which round of the protocol it is in
           pending_direct_ack,   \* Each member keeps track of members it is pending a direct ack from
           pending_indirect_ack, \* Each member keeps track of members it is pending an idirect ack from
-          probe_req_counter,    \* Each member keeps track of the number of probe requests it has sent in any given round
           probe_ctr,            \* Each member keeps track of how many probes it has sent to each peer
                                 \* It randomly selects peers, but keeps the number of probes balanced
           \* messaging passing
@@ -108,7 +107,7 @@ VARIABLES \* actual state in the protocol
           \* variable to stop simulation once the stop condition has been satisified
           sim_status       
           
-vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round, sim_status>>
+vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status>>
 
 updates_pr_ctr(r) ==
     (r * 100)
@@ -183,7 +182,6 @@ Init ==
                 /\ messages = [msg \in {} |-> 0]
                 /\ pending_direct_ack = [m \in Member |-> Nil]
                 /\ pending_indirect_ack = [m \in Member |-> Nil]
-                /\ probe_req_counter = [m \in Member |-> 0]
                 /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
                 /\ sim_status = 0
                 /\ ResetStats(1000)
@@ -231,7 +229,6 @@ MessageProcessed(msg) ==
 RegisterPendingDirectAck(member, peer) ==
     /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = peer]
     /\ probe_ctr' = [probe_ctr EXCEPT ![member][peer] = @ + 1]
-    /\ probe_req_counter' = [probe_req_counter EXCEPT ![member] = 0]
 
 RegisterReceivedDirectAck(member) ==
     pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = Nil]
@@ -246,6 +243,9 @@ MaxRound ==
         \A m2 \in Member: round[m1] >= round[m2]
     IN round[highest]
 
+IncrementRound(m) ==
+    round' = [round EXCEPT ![m] = @ + 1]
+    
 \* The set of all members that are alive
 LiveMembers ==
     { m \in Member : incarnation[m] # Nil }
@@ -262,7 +262,7 @@ RealStateOfMember(member, nil, dead_state, alive_state) ==
 \* SWIM does not prevent false positives (just mitigates them)
 \* and makes no provision for coming back from the dead - once you a member thinks you're dead 
 \* they cannot be convinced otherwise.
-IsConverged2(inc, pstates, nil, dead_state, alive_state) ==
+IsConverged(inc, pstates, nil, dead_state, alive_state) ==
     \A member \in Member :
         \A peer \in Member :
             \/ inc[peer] = nil
@@ -272,13 +272,13 @@ IsConverged2(inc, pstates, nil, dead_state, alive_state) ==
                   \/ pstates[peer][member].state = DeadState                      
 
 WillBeConverged ==
-    IsConverged2(incarnation, peer_states', Nil, DeadState, AliveState)
+    IsConverged(incarnation, peer_states', Nil, DeadState, AliveState)
     
-MemberThinksEveryoneIsDead(member) ==
-    \A m1 \in Member : m1 = member \/ peer_states[member][m1].state = DeadState    
+MemberThinksEveryoneIsDead(member, mem, pstates, dead_state) ==
+    \A m1 \in mem : m1 = member \/ pstates[member][m1].state = dead_state    
     
 AllMembersThinkEveryoneIsDead ==
-    \A member \in Member: MemberThinksEveryoneIsDead(member) 
+    \A member \in Member: MemberThinksEveryoneIsDead(member, Member, peer_states, DeadState) 
     
 StopConditionReached ==
     \/ sim_status > 0
@@ -288,7 +288,7 @@ StopConditionReached ==
              THEN IF AllMembersThinkEveryoneIsDead THEN TRUE ELSE FALSE
              ELSE TRUE
        ELSE
-             IF IsConverged2(incarnation, peer_states, Nil, DeadState, AliveState) 
+             IF IsConverged(incarnation, peer_states, Nil, DeadState, AliveState) 
              THEN TRUE 
              ELSE FALSE
     
@@ -301,6 +301,16 @@ IsNewInformation(member, peer, peer_state) ==
     \/ peer_state.incarnation > peer_states[member][peer].incarnation
     \/ /\ peer_state.incarnation = peer_states[member][peer].incarnation
        /\ peer_state.state < peer_states[member][peer].state
+
+IsChainMsg(member, msg) ==
+    \/ /\ msg.type = ProbeRequestMessage 
+       /\ msg.source = member
+    \/ /\ msg.type = ProbeMessage
+       /\ msg.on_behalf_of = member
+    \/ /\ msg.type = AckMessage
+       /\ msg.on_behalf_of = member
+    \/ /\ msg.type = ForwardedAckMessage
+       /\ msg.dest = member
 
 (************************************************************************) 
 (******************** RECORD STATISTICS *********************************)
@@ -340,24 +350,28 @@ CurrentStateCount(state) == StateCount(state, peer_states)
 NextStateStateCount(state) == StateCount(state, peer_states')
                 
 
-IsNewRoundTransitionStep2(i, r1, r2, nil, mem) ==
-    \/ /\ Cardinality({m \in Member : MemberThinksEveryoneIsDead(m)}) = 1
-       /\ \E m \in Member : r1[m] # r2[m]
-    \/ /\ \E m1, m2 \in mem: i[m1] # nil /\ i[m2] # nil /\ r1[m1] # r1[m2] 
-       /\ \A m3, m4 \in mem: 
-            \/ i[m3] = Nil
-            \/ i[m4] = Nil
-            \/ MemberThinksEveryoneIsDead(m3)
-            \/ MemberThinksEveryoneIsDead(m4)
-            \/ /\ i[m3] # nil 
-               /\ i[m4] # nil 
-               /\ ~MemberThinksEveryoneIsDead(m3)
-               /\ ~MemberThinksEveryoneIsDead(m4)
+IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
+    /\ \E m \in mem : r1[m] # r2[m]
+    /\ \/ Cardinality({m \in mem : ~MemberThinksEveryoneIsDead(m, mem, pstates, dead_state)}) = 1
+       \/ /\ \E m1, m2 \in mem: /\ inc[m1] # nil 
+                                /\ inc[m2] # nil
+                                /\ ~MemberThinksEveryoneIsDead(m1, mem, pstates, dead_state)
+                                /\ ~MemberThinksEveryoneIsDead(m2, mem, pstates, dead_state)
+                                /\ r1[m1] # r1[m2] 
+          /\ \A m3, m4 \in mem: 
+            \/ inc[m3] = Nil
+            \/ inc[m4] = Nil
+            \/ MemberThinksEveryoneIsDead(m3, mem, pstates, dead_state)
+            \/ MemberThinksEveryoneIsDead(m4, mem, pstates, dead_state)
+            \/ /\ inc[m3] # nil 
+               /\ inc[m4] # nil 
+               /\ ~MemberThinksEveryoneIsDead(m3, mem, pstates, dead_state)
+               /\ ~MemberThinksEveryoneIsDead(m4, mem, pstates, dead_state)
                /\ r2[m3] = r2[m4]
 
 MayBeRecordMemberCounts ==
     \* Is this is a step that leads to all members being on the same round then record the member count stats
-        IF  IsNewRoundTransitionStep2(incarnation, round, round', Nil, Member)
+        IF  IsNewRoundTransitionStep(incarnation, round, round', Nil, Member, peer_states, DeadState)
         THEN
             LET r == MaxRound
             IN
@@ -430,7 +444,7 @@ PrintStats ==
                 IF incarnation[member] # Nil
                 THEN PrintT("outgoing_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(OutgoingMessageLoad(r, member)))
                 ELSE TRUE*)
-        /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
+        (*/\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : 
             IF r = max_stats_round 
@@ -452,7 +466,7 @@ PrintStats ==
             IF r = max_stats_round 
             THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
             ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
-        /\ PrintT("converged")
+        /\ PrintT("converged")*)
         /\ TLCDefer(ResetStats(max_stats_round))
         /\ PrintT(<<"reset stats for each round up to", max_stats_round>>)
     
@@ -461,7 +475,7 @@ EndSim ==
     /\ sim_status # 1
     /\ IF PrintStatsOnDeadlock = TRUE THEN PrintStats ELSE TRUE
     /\ sim_status' = 1
-    /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round>>
+    /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round>>
 
 RecordGossipStats(member, gossip_source, incoming_states, end_of_round) ==
     TLCDefer(RecordIncomingGossipStats(member, gossip_source, incoming_states, end_of_round))
@@ -636,6 +650,11 @@ IsFairlyScheduled(member, peer) ==
         \/ /\ incarnation[m1] # Nil
            /\ round[member] <= round[m1]
 
+HasNoPendingRequests(member) ==
+    ~\E msg \in DOMAIN messages :
+        /\ msg.dest = member
+        /\ messages[msg] > 0
+
 \* The sending of a direct probe is the beginning of a new protocol period.
 SendDirectProbe(member, peer) ==
     /\ ~StopConditionReached
@@ -645,6 +664,7 @@ SendDirectProbe(member, peer) ==
     /\ IsValidProbeTarget(member, peer)     \* The peer is valid (the member think it's not dead for example)
     /\ IsValidRandomPick(member, peer)      \* Peers are picked randomly, but in a balanced way
     /\ IsFairlyScheduled(member, peer)      \* For simulation - we keep all members within 1 round of each other
+    /\ HasNoPendingRequests(member)
     /\ LET gossip_to_send == SelectOutgoingGossip(member, peer, peer_states[member])
        IN
         /\ SendMessage([type         |-> ProbeMessage,
@@ -707,7 +727,7 @@ ReceiveProbe ==
                /\ SendAck(msg, new_incarnation, merged_peer_state, send_gossip)
                /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, sim_status >>
+    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr, sim_status >>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveAck ********************************)
@@ -734,9 +754,9 @@ ReceiveAck ==
             /\ UpdatePeerStates(msg.dest, merged_peer_state, <<>>)
             /\ RegisterReceivedDirectAck(msg.dest)
             /\ MessageProcessed(msg)
-            /\ round' = [round EXCEPT ![msg.dest] = @ + 1]
+            /\ IncrementRound(msg.dest)
             /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE)
-            /\ UNCHANGED << pending_indirect_ack, probe_req_counter, probe_ctr, sim_status>>
+            /\ UNCHANGED << pending_indirect_ack, probe_ctr, sim_status>>
 
 (************************************************************************) 
 (******************** ACTION: Expire ************************************)
@@ -753,7 +773,7 @@ Expire(member, peer) ==
     /\ peer_states[member][peer].state = SuspectState
     /\ (round[member] - peer_states[member][peer].round) > SuspectTimeout
     /\ UpdateState(member, peer, DeadState)
-    /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round, sim_status >>
+    /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status >>
 
 
 (************************************************************************) 
@@ -794,10 +814,9 @@ EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr) ==
     /\ IsValidProbeTarget(member, peer)
     /\ ~\E pr \in prev_pr : pr.dest = peer
 
-SendOneProbeRequest(failed_probe) == 
+SendOneProbeRequest(failed_probe, prev_pr) == 
     LET member      == failed_probe.source
         failed_peer == failed_probe.dest
-        prev_pr     == AlreadySentProbeRequests(failed_probe)
     IN
         \E peer \in Member : 
             /\ EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr)
@@ -807,14 +826,12 @@ SendOneProbeRequest(failed_probe) ==
                     /\ UpdatePeerStates(member, peer_states[member], gossip_to_send)
                     /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![member] = failed_peer]
                     /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = Nil]
-                    /\ probe_req_counter' = [probe_req_counter EXCEPT ![member] = @ + 1]
 
 DirectProbeFailed(msg) ==
     /\ msg.type = ProbeMessage
     /\ messages[msg] <= 0
     /\ msg.round = round[msg.source]
     /\ msg.on_behalf_of = Nil
-    /\ probe_req_counter[msg.source] < PeerGroupSize
     /\ ~\E ack \in DOMAIN messages : 
         /\ ack.type = AckMessage
         /\ ack.dest = msg.source
@@ -825,7 +842,10 @@ SendProbeRequest ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ DirectProbeFailed(msg)
-        /\ SendOneProbeRequest(msg)
+        /\ LET prev_pr == AlreadySentProbeRequests(msg)
+           IN
+            /\ Cardinality(prev_pr) < PeerGroupSize
+            /\ SendOneProbeRequest(msg, prev_pr)
         /\ UNCHANGED <<incarnation, probe_ctr, round, sim_status>>
 
 (************************************************************************) 
@@ -842,13 +862,21 @@ NoEligiblePeersForProbeRequest(failed_probe) ==
         failed_peer == failed_probe.dest
         prev_pr     == AlreadySentProbeRequests(failed_probe)
     IN
-        ~\E peer \in Member : 
+        \/ Cardinality(prev_pr) = PeerGroupSize
+        \/ ~\E peer \in Member : 
             EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr)
+
+ProbeRequestsSent(member) ==
+    \E msg \in DOMAIN messages :
+        /\ msg.type = ProbeRequestMessage
+        /\ msg.round = round[member]
+        /\ msg.source = member
 
 NoPeersForProbeRequest ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ DirectProbeFailed(msg)
+        /\ ~ProbeRequestsSent(msg.source)
         /\ NoEligiblePeersForProbeRequest(msg)
         \* if there are no peers for sending out a probe request, and we haven't sent
         \* any previously, then this is the end of this round for this member
@@ -856,11 +884,10 @@ NoPeersForProbeRequest ==
            THEN UpdateState(msg.source, msg.dest, SuspectState)
            ELSE UNCHANGED peer_states
         /\ IF pending_indirect_ack[msg.source] = Nil
-           THEN /\ round' = [round EXCEPT ![msg.source] = @ + 1]
+           THEN /\ IncrementRound(msg.source)
                 /\ RecordStateStats
-           ELSE UNCHANGED round
+           ELSE UNCHANGED <<round>>
         /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![msg.source] = Nil]
-        /\ probe_req_counter' = [probe_req_counter EXCEPT ![msg.source] = PeerGroupSize]
         /\ UNCHANGED <<incarnation, messages, probe_ctr, pending_indirect_ack, sim_status>>
     
 
@@ -896,7 +923,7 @@ ReceiveProbeRequest ==
                                 gossip       |-> gossip_to_send])
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, gossip_to_send)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round, sim_status >>
+    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status >>
 
 
 (************************************************************************) 
@@ -918,7 +945,7 @@ ForwardedAck(msg, merged_peer_state, gossip_to_send) ==
      target     |-> msg.source,
      dest_state |-> ShareableState(merged_peer_state[msg.on_behalf_of]),
      source_inc |-> incarnation[msg.dest],
-     round      |-> round[msg.dest],
+     round      |-> msg.round,
      gossip     |-> gossip_to_send]
 
 ReceiveProbeRequestAck ==
@@ -938,7 +965,7 @@ ReceiveProbeRequestAck ==
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
                 /\ ProcessedOneAndSendAnother(msg, ForwardedAck(msg, merged_peer_state, send_gossip))
-                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_req_counter, probe_ctr, round, sim_status>>
+                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status>>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveForwardedAck ***********************)
@@ -965,14 +992,14 @@ ReceiveForwardedAck ==
            IN
             /\ MayBeUpdateIncarnation(msg.dest, new_incarnation)
             /\ UpdatePeerStates(msg.dest, merged_peer_state, <<>>)
-            /\ IF pending_indirect_ack[msg.dest] # Nil 
-               THEN /\ round' = [round EXCEPT ![msg.dest] = @ + 1]
+            /\ IF round[msg.dest] # msg.round \/ pending_indirect_ack[msg.dest] = Nil 
+               THEN /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
+                    /\ UNCHANGED << round, pending_indirect_ack >>
+               ELSE /\ IncrementRound(msg.dest)
                     /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![msg.dest] = Nil]
                     /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE) 
-               ELSE /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-                    /\ UNCHANGED << round, pending_indirect_ack >>
             /\ MessageProcessed(msg)
-            /\ UNCHANGED << pending_direct_ack, probe_req_counter, probe_ctr, sim_status>>
+            /\ UNCHANGED << pending_direct_ack, probe_ctr, sim_status>>
 
 
 (************************************************************************) 
@@ -987,7 +1014,7 @@ This is the end of a protocol period of this member, so the round for this membe
 is incremented.
 *)
 
-IndirectProbeChainBroken(member) ==
+IndirectProbeChainIntact(member) ==
     LET round_of_chain == round[member]
     IN
         \E msg \in DOMAIN messages :
@@ -1000,13 +1027,23 @@ IndirectProbeChainBroken(member) ==
                  /\ msg.on_behalf_of = member
               \/ /\ msg.type = ForwardedAckMessage
                  /\ msg.dest = member
-           /\ messages[msg] <= 0
+           /\ messages[msg] > 0
+
+NoMoreProbeRequestsToSend(member) == 
+    LET failed_probe == CHOOSE msg \in DOMAIN messages :
+                            /\ msg.type = ProbeMessage
+                            /\ msg.round = round[member]
+                            /\ msg.source = member
+                            /\ msg.on_behalf_of = Nil
+    IN NoEligiblePeersForProbeRequest(failed_probe)
 
 NoResponseToProbeRequests ==
     /\ ~StopConditionReached
     /\ \E member \in Member :
         /\ pending_indirect_ack[member] # Nil
-        /\ IndirectProbeChainBroken(member)
+        /\ ProbeRequestsSent(member)
+        /\ NoMoreProbeRequestsToSend(member)
+        /\ ~IndirectProbeChainIntact(member)
         /\ LET pr == CHOOSE msg \in DOMAIN messages :
                         /\ msg.type = ProbeRequestMessage
                         /\ msg.source = member
@@ -1016,9 +1053,9 @@ NoResponseToProbeRequests ==
                    THEN UpdateState(member, pr.target, SuspectState)
                    ELSE UNCHANGED << peer_states >>
                 /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![member] = Nil]
-                /\ round' = [round EXCEPT ![member] = @ + 1]
+                /\ IncrementRound(member)
                 /\ RecordStateStats
-                /\ UNCHANGED <<incarnation, messages, pending_direct_ack, probe_req_counter, probe_ctr, sim_status>>
+                /\ UNCHANGED <<incarnation, messages, pending_direct_ack, probe_ctr, sim_status>>
 
 (************************************************************************) 
 (******************** ACTION: MemberJoins *******************************)
@@ -1045,7 +1082,7 @@ MemberJoins ==
                                                       THEN KnownAliveStateRecord
                                                       ELSE UnknownStateRecord]]
             /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, 
-                           probe_req_counter, probe_ctr, round, sim_status >>
+                           probe_ctr, round, sim_status >>
 
 
 (************************************************************************) 
@@ -1069,7 +1106,7 @@ MemberLeaves ==
         /\ incarnation' = [incarnation EXCEPT ![m1] = Nil]
         /\ messages' = [msg \in DOMAIN messages |-> IF msg.dest = m1 THEN 0 ELSE messages[msg]]
         /\ UNCHANGED <<peer_states, pending_direct_ack, pending_indirect_ack, 
-                       probe_req_counter, probe_ctr, round, sim_status >>
+                       probe_ctr, round, sim_status >>
 
 
 (************************************************************************) 
@@ -1110,8 +1147,65 @@ TypeOK ==
     /\ probe_ctr \in [Member -> [Member -> Nat]]
     /\ sim_status \in Nat
 
+
+
+LiveMsgChain(member) ==
+    LET round_of_chain == round[member]
+    IN
+        { msg \in DOMAIN messages :
+           /\ msg.round = round_of_chain
+           /\ \/ /\ msg.type = ProbeRequestMessage 
+                 /\ msg.source = member
+              \/ /\ msg.type = ProbeMessage
+                 /\ msg.on_behalf_of = member
+              \/ /\ msg.type = AckMessage
+                 /\ msg.on_behalf_of = member
+              \/ /\ msg.type = ForwardedAckMessage
+                 /\ msg.dest = member
+           /\ messages[msg] > 0 }
+           
+DeadMsgChain(member) ==
+    LET round_of_chain == round[member]
+    IN
+        { msg \in DOMAIN messages :
+           /\ msg.round = round_of_chain
+           /\ \/ /\ msg.type = ProbeRequestMessage 
+                 /\ msg.source = member
+              \/ /\ msg.type = ProbeMessage
+                 /\ msg.on_behalf_of = member
+              \/ /\ msg.type = AckMessage
+                 /\ msg.on_behalf_of = member
+              \/ /\ msg.type = ForwardedAckMessage
+                 /\ msg.dest = member
+           /\ messages[msg] <= 0 }           
+
 Inv ==
-    
+    \*TRUE
+    (*\A m \in Member:
+        ~\E msg \in DOMAIN messages :
+            /\ IsChainMsg(m, msg)
+            /\ messages[msg] > 0
+            /\ round[m] # msg.round
+            /\ \E m1 \in DOMAIN messages : /\ msg.type = ProbeMessage
+                                           /\ msg.round = round[m]
+                                           /\ msg.source = m
+                                           /\ msg.on_behalf_of = Nil*)   
+        
+    (*\A m \in Member : \/ pending_indirect_ack[m] = Nil
+                      \/ /\ pending_indirect_ack[m] # Nil
+                         /\ IF ~IndirectProbeChainIntact(m)
+                            THEN IF Cardinality(DeadMsgChain(m)) > 10
+                                 THEN /\ Print(<<"LIVE_CHAIN", LiveMsgChain(m)>>, TRUE) 
+                                      /\ Print(<<"DEAD_CHAIN", DeadMsgChain(m)>>, TRUE)
+                                      /\ FALSE
+                                 ELSE TRUE
+                                 \*LET msgs == { msg \in DOMAIN messages : msg.source = m /\ msg.round = round[m] /\ msg.type = ProbeRequestMessage }  
+                                 \*IN IF Cardinality(msgs) = PeerGroupSize THEN Print(<<"LIVE_CHAIN", LiveMsgChain(m)>>, TRUE) /\ Print(<<"DEAD_CHAIN", DeadMsgChain(m)>>, TRUE) /\ Print(<<"MSGS", msgs>>, TRUE) ELSE TRUE
+                            ELSE TRUE*)
+                              
+    \*\A m \in Member : probe_req_counter[m] = Cardinality({ msg \in DOMAIN messages : msg.source = m /\ msg.round = round[m] /\ msg.type = ProbeRequestMessage })
+                      
+                           
     (*\A r \in 1..MaxRound :
         IF TLCGet(updates_pr_ctr(r)) > 2000 
         THEN PrintStats /\ FALSE
@@ -1122,9 +1216,8 @@ Inv ==
     ELSE TRUE*)
     IF (~ ENABLED Next) THEN
         IF sim_status = 1 THEN TRUE
-        ELSE Print(<<"C", IsConverged2(incarnation, peer_states, Nil, DeadState, AliveState)>>, FALSE)
-    ELSE
-        TRUE
+        ELSE Print(<<"C", IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)>>, FALSE)
+    ELSE TRUE
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -1133,6 +1226,6 @@ Ensemble ==
 
 ============================================================================
 \* Modification History
-\* Last modified Fri Sep 11 05:34:41 PDT 2020 by jack
+\* Last modified Mon Sep 14 02:42:27 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
