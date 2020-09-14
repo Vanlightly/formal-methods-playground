@@ -1147,77 +1147,13 @@ TypeOK ==
     /\ probe_ctr \in [Member -> [Member -> Nat]]
     /\ sim_status \in Nat
 
-
-
-LiveMsgChain(member) ==
-    LET round_of_chain == round[member]
-    IN
-        { msg \in DOMAIN messages :
-           /\ msg.round = round_of_chain
-           /\ \/ /\ msg.type = ProbeRequestMessage 
-                 /\ msg.source = member
-              \/ /\ msg.type = ProbeMessage
-                 /\ msg.on_behalf_of = member
-              \/ /\ msg.type = AckMessage
-                 /\ msg.on_behalf_of = member
-              \/ /\ msg.type = ForwardedAckMessage
-                 /\ msg.dest = member
-           /\ messages[msg] > 0 }
-           
-DeadMsgChain(member) ==
-    LET round_of_chain == round[member]
-    IN
-        { msg \in DOMAIN messages :
-           /\ msg.round = round_of_chain
-           /\ \/ /\ msg.type = ProbeRequestMessage 
-                 /\ msg.source = member
-              \/ /\ msg.type = ProbeMessage
-                 /\ msg.on_behalf_of = member
-              \/ /\ msg.type = AckMessage
-                 /\ msg.on_behalf_of = member
-              \/ /\ msg.type = ForwardedAckMessage
-                 /\ msg.dest = member
-           /\ messages[msg] <= 0 }           
-
 Inv ==
-    \*TRUE
-    (*\A m \in Member:
-        ~\E msg \in DOMAIN messages :
-            /\ IsChainMsg(m, msg)
-            /\ messages[msg] > 0
-            /\ round[m] # msg.round
-            /\ \E m1 \in DOMAIN messages : /\ msg.type = ProbeMessage
-                                           /\ msg.round = round[m]
-                                           /\ msg.source = m
-                                           /\ msg.on_behalf_of = Nil*)   
-        
-    (*\A m \in Member : \/ pending_indirect_ack[m] = Nil
-                      \/ /\ pending_indirect_ack[m] # Nil
-                         /\ IF ~IndirectProbeChainIntact(m)
-                            THEN IF Cardinality(DeadMsgChain(m)) > 10
-                                 THEN /\ Print(<<"LIVE_CHAIN", LiveMsgChain(m)>>, TRUE) 
-                                      /\ Print(<<"DEAD_CHAIN", DeadMsgChain(m)>>, TRUE)
-                                      /\ FALSE
-                                 ELSE TRUE
-                                 \*LET msgs == { msg \in DOMAIN messages : msg.source = m /\ msg.round = round[m] /\ msg.type = ProbeRequestMessage }  
-                                 \*IN IF Cardinality(msgs) = PeerGroupSize THEN Print(<<"LIVE_CHAIN", LiveMsgChain(m)>>, TRUE) /\ Print(<<"DEAD_CHAIN", DeadMsgChain(m)>>, TRUE) /\ Print(<<"MSGS", msgs>>, TRUE) ELSE TRUE
-                            ELSE TRUE*)
-                              
-    \*\A m \in Member : probe_req_counter[m] = Cardinality({ msg \in DOMAIN messages : msg.source = m /\ msg.round = round[m] /\ msg.type = ProbeRequestMessage })
-                      
-                           
-    (*\A r \in 1..MaxRound :
-        IF TLCGet(updates_pr_ctr(r)) > 2000 
-        THEN PrintStats /\ FALSE
-        ELSE TRUE*)
-    
-    (*IF \E m \in Member : round[m] > 5 THEN 
-        ~IsConverged2(incarnation, peer_states, Nil, DeadState, AliveState)
-    ELSE TRUE*)
-    IF (~ ENABLED Next) THEN
+    TRUE
+    (*TLCGet("level") < 20*)
+    (*IF (~ ENABLED Next) THEN
         IF sim_status = 1 THEN TRUE
         ELSE Print(<<"C", IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)>>, FALSE)
-    ELSE TRUE
+    ELSE TRUE*)
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -1226,6 +1162,6 @@ Ensemble ==
 
 ============================================================================
 \* Modification History
-\* Last modified Mon Sep 14 02:42:27 PDT 2020 by jack
+\* Last modified Mon Sep 14 06:56:07 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
