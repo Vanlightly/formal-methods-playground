@@ -517,15 +517,10 @@ SelectOutgoingGossip(member, dest_peer, merged_peer_states) ==
              
 \* Increment the dissemination counter of the peer states that have been gossiped             
 UpdatePeerStates(member, updated_peer_states, sent_peer_states) ==
-    /\ peer_states' = [peer_states EXCEPT ![member] =  
+    peer_states' = [peer_states EXCEPT ![member] =  
                         [peer \in Member |-> IF peer \in DOMAIN sent_peer_states
                                              THEN [updated_peer_states[peer] EXCEPT !.disseminations = @ + 1]
                                              ELSE updated_peer_states[peer]]]
-    /\ IF \E peer \in DOMAIN updated_peer_states :
-        /\ peer_states[member][peer].state = DeadState
-        /\ peer_states'[member][peer].state # DeadState
-       THEN sim_status' = -1
-       ELSE UNCHANGED sim_status
                                                                  
 
 (************************************************************************) 
@@ -669,7 +664,7 @@ SendDirectProbe(member, peer) ==
                         gossip       |-> gossip_to_send])
         /\ UpdatePeerStates(member, peer_states[member], gossip_to_send)
         /\ RegisterPendingDirectAck(member, peer)
-        /\ UNCHANGED <<incarnation, pending_indirect_ack, round, initial_state_stats >>
+        /\ UNCHANGED <<incarnation, pending_indirect_ack, round, sim_status, initial_state_stats >>
 
 
         
@@ -717,7 +712,7 @@ ReceiveProbe ==
                /\ SendAck(msg, new_incarnation, merged_peer_state, send_gossip)
                /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr, initial_state_stats >>
+    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr, sim_status, initial_state_stats >>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveAck ********************************)
@@ -745,7 +740,7 @@ ReceiveAck ==
             /\ MessageProcessed(msg)
             /\ IncrementRound(msg.dest)
             /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE)
-            /\ UNCHANGED << pending_indirect_ack, probe_ctr, initial_state_stats>>
+            /\ UNCHANGED << pending_indirect_ack, probe_ctr, sim_status, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: Expire ************************************)
@@ -835,7 +830,7 @@ SendProbeRequest ==
         /\ DirectProbeFailed(msg)
         /\ Quantify(DOMAIN messages, LAMBDA prev_msg : IsPreviouslySentPR(prev_msg, msg.source, msg.round)) < PeerGroupSize
         /\ SendOneProbeRequest(msg)
-        /\ UNCHANGED <<incarnation, probe_ctr, round, initial_state_stats>>
+        /\ UNCHANGED <<incarnation, probe_ctr, round, sim_status, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: NoPeersForProbeRequest ********************)
@@ -905,7 +900,7 @@ ReceiveProbeRequest ==
                                 gossip       |-> gossip_to_send])
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, gossip_to_send)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_stats >>
+    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status, initial_state_stats >>
 
 
 (************************************************************************) 
@@ -947,7 +942,7 @@ ReceiveProbeRequestAck ==
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
                 /\ ProcessedOneAndSendAnother(msg, ForwardedAck(msg, merged_peer_state, send_gossip))
-                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_stats>>
+                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveForwardedAck ***********************)
@@ -980,7 +975,7 @@ ReceiveForwardedAck ==
                     /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![msg.dest] = Nil]
                     /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE) 
             /\ MessageProcessed(msg)
-            /\ UNCHANGED << pending_direct_ack, probe_ctr, initial_state_stats>>
+            /\ UNCHANGED << pending_direct_ack, probe_ctr, sim_status, initial_state_stats>>
 
 
 (************************************************************************) 
@@ -1177,6 +1172,6 @@ TestEnsemble ==
 
 ============================================================================
 \* Modification History
-\* Last modified Thu Sep 17 01:34:44 PDT 2020 by jack
+\* Last modified Thu Sep 17 02:05:07 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
