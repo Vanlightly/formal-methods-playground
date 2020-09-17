@@ -31,7 +31,7 @@ Summary of modifications:
         
 *)
 
-EXTENDS Naturals, FiniteSets, Sequences, TLC, TLCExt, Integers
+EXTENDS Naturals, FiniteSets, FiniteSetsExt, Sequences, TLC, TLCExt, Integers
 
 
 CONSTANTS Nil,                      \* Empty numeric value
@@ -57,7 +57,7 @@ CONSTANTS Nil,                      \* Empty numeric value
                                     \* "probabilistic" randomly drops messages, based on LoseEveryNth 
                                     \* "exhaustive" chooses both (model checking mode)     
           LoseEveryNth,             \* Each message has a 1/n chance of being lost. For use in simulation.
-          InitialContactMemberCount,\* The number of members that newly added members know of
+          InitialContacts,          \* The number of members that newly added members know of
                                     \* used to bootstrap the new member into the cluster
           MemberLeavesEnabled,      \* TRUE or FALSE as to the MemberLeaves action is enabled
           NewMemberCount,           \* The number of new members the ensemble need to detect
@@ -71,7 +71,7 @@ CONSTANTS Nil,                      \* Empty numeric value
 ASSUME AliveState > SuspectState /\ SuspectState > DeadState /\ DeadState > UnknownState
 
 ASSUME DeadMemberCount \in Nat
-ASSUME InitialContactMemberCount \in Nat
+ASSUME InitialContacts \in Nat
 ASSUME SuspectTimeout \in Nat
 ASSUME MaxUpdatesPerPiggyBack \in (Nat \ {0})
 ASSUME DisseminationLimit \in (Nat \ {0})
@@ -91,7 +91,7 @@ ASSUME DeadMemberCount < Cardinality(Member)
 ASSUME NewMemberCount < Cardinality(Member)
 ASSUME UnjoinedMemberCount < Cardinality(Member)
 
-ASSUME DeadMemberCount + NewMemberCount + InitialContactMemberCount <= Cardinality(Member) - UnjoinedMemberCount
+ASSUME DeadMemberCount + NewMemberCount + InitialContacts <= Cardinality(Member) - UnjoinedMemberCount
             
 VARIABLES \* actual state in the protocol
           incarnation,          \* Member incarnation numbers
@@ -104,87 +104,11 @@ VARIABLES \* actual state in the protocol
           \* messaging passing
           messages,             \* a function of all messages
           
-          \* variable to stop simulation once the stop condition has been satisified
-          sim_status       
+          \* for simulation and stats
+          sim_status,
+          initial_state_stats       
           
-vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status>>
-
-updates_pr_ctr(r) ==
-    (r * 100)
-
-eff_updates_pr_ctr(r) ==
-    (r * 100) + 1
-
-suspect_ctr(r) ==
-    (r * 100) + 2
-    
-suspect_states_ctr(r) ==
-    (r * 100) + 3
-    
-dead_ctr(r) ==
-    (r * 100) + 4
-    
-dead_states_ctr(r) ==
-    (r * 100) + 5    
-    
-alive_ctr(r) ==
-    (r * 100) + 6
-    
-alive_states_ctr(r) ==
-    (r * 100) + 7
-    
-
-ResetStats(max_round) ==
-    \A r \in 1..max_round : 
-        /\ TLCSet(updates_pr_ctr(r), 0)
-        /\ TLCSet(eff_updates_pr_ctr(r), 0)
-        /\ TLCSet(suspect_ctr(r), 0)
-        /\ TLCSet(dead_ctr(r), 0)
-        /\ TLCSet(alive_ctr(r), 0)
-        /\ TLCSet(suspect_states_ctr(r), 0)
-        /\ TLCSet(dead_states_ctr(r), 0)
-        /\ TLCSet(alive_states_ctr(r), 0)
-
-UnknownStateRecord ==
-    [incarnation    |-> 0, 
-     state          |-> UnknownState, 
-     round          |-> 0, 
-     disseminations |-> DisseminationLimit]
-     
-KnownAliveStateRecord ==
-    [incarnation    |-> 1, 
-     state          |-> AliveState, 
-     round          |-> 1, 
-     disseminations |-> DisseminationLimit]
-
-\* We can configure the initial state to start with a certain number of undetected states
-\* such as undetected dead members or undetected newly joined members.
-\* We can also configure some members to not have joined yet
-\* The rest will be started, and already know about each other and their peer state they have not being infective.
-\* This all allows us to test various scenarios easily
-Init ==
-    LET undetected_dead == CHOOSE s \in SUBSET Member : Cardinality(s) = DeadMemberCount
-    IN LET undetected_joined == CHOOSE s \in SUBSET (Member \ undetected_dead) : Cardinality(s) = NewMemberCount
-       IN LET contact_members == CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined)) : Cardinality(s) = InitialContactMemberCount
-          IN LET unjoined == CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined \union contact_members)) : Cardinality(s) = UnjoinedMemberCount
-             IN
-                /\ incarnation = [m \in Member |-> IF m \in undetected_dead THEN Nil ELSE 1]
-                /\ peer_states = [m \in Member |-> [m1 \in Member |-> 
-                                                        CASE m \in undetected_joined -> IF m1 \in contact_members
-                                                                                        THEN KnownAliveStateRecord
-                                                                                        ELSE UnknownStateRecord
-                                                          [] m \in undetected_dead   -> UnknownStateRecord
-                                                          [] m \in unjoined          -> UnknownStateRecord
-                                                          [] OTHER                   -> IF m1 \in undetected_joined \/ m1 \in unjoined
-                                                                                        THEN UnknownStateRecord
-                                                                                        ELSE KnownAliveStateRecord]]
-                /\ round = [m \in Member |-> 1]
-                /\ messages = [msg \in {} |-> 0]
-                /\ pending_direct_ack = [m \in Member |-> Nil]
-                /\ pending_indirect_ack = [m \in Member |-> Nil]
-                /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
-                /\ sim_status = 0
-                /\ ResetStats(1000)
+vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status, initial_state_stats>>
 
 (*****************************************************)
 (*************** Messaging passing *******************)
@@ -222,10 +146,28 @@ MessageProcessed(msg) ==
     /\ msg \in DOMAIN messages
     /\ messages[msg] >= 1
     /\ messages' = [messages EXCEPT ![msg] = @ - 1]
-    
+
+\* Can only receive message if not received yet and the receipient is alive
+\* Also SWIM paper makes no provision for communication from a peer a member considers to be dead already
+\* so we ignore it.
+CanReceiveMessage(msg, message_type) ==
+    /\ msg.type = message_type
+    /\ messages[msg] >= 1
+    /\ incarnation[msg.dest] # Nil
+    /\ peer_states[msg.dest][msg.source].state # DeadState
+
+
+MessageIgnored ==
+    \E msg \in DOMAIN messages : 
+        /\ messages[msg] >= 1
+        /\ \/ incarnation[msg.dest] = Nil
+           \/ peer_states[msg.dest][msg.source].state = DeadState
+        /\ messages' = [messages EXCEPT ![msg] = 0]
+        /\ UNCHANGED << incarnation, peer_states, pending_direct_ack, pending_indirect_ack, 
+                        probe_ctr, round, sim_status, initial_state_stats >>
+
 \* When a member sends a probe to a peer, it needs to keep track of that
 \* and additionally increment its probe_ctr (required for balanced probing)
-\* and reset its probe request counter for this new protocol round
 RegisterPendingDirectAck(member, peer) ==
     /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![member] = peer]
     /\ probe_ctr' = [probe_ctr EXCEPT ![member][peer] = @ + 1]
@@ -237,6 +179,18 @@ RegisterReceivedDirectAck(member) ==
 (*************** Helper operators ********************)
 (*****************************************************)
 
+UnknownStateRecord ==
+    [incarnation    |-> 0, 
+     state          |-> UnknownState, 
+     round          |-> 0, 
+     disseminations |-> DisseminationLimit]
+     
+KnownAliveStateRecord ==
+    [incarnation    |-> 1, 
+     state          |-> AliveState, 
+     round          |-> 1, 
+     disseminations |-> DisseminationLimit]
+
 \* What is the highest protocol round of the ensemble
 MaxRound ==
     LET highest == CHOOSE m1 \in Member :
@@ -246,10 +200,6 @@ MaxRound ==
 IncrementRound(m) ==
     round' = [round EXCEPT ![m] = @ + 1]
     
-\* The set of all members that are alive
-LiveMembers ==
-    { m \in Member : incarnation[m] # Nil }
-    
 \* The real state being either dead or alive. The real state of a member 
 \* cannot be "suspected".
 RealStateOfMember(member, nil, dead_state, alive_state) ==
@@ -257,11 +207,11 @@ RealStateOfMember(member, nil, dead_state, alive_state) ==
 
 \* TRUE when:
 \* for each member, it's live peers all agree on the same thing, specifically that:
-\*    - either they all see the true state
-\*    - or they all (falsely) think that it is dead
+\*    - either they see the true state
+\*    - or they (falsely) think that it is dead
 \* SWIM does not prevent false positives (just mitigates them)
 \* and makes no provision for coming back from the dead - once you a member thinks you're dead 
-\* they cannot be convinced otherwise.
+\* they cannot be convinced otherwise (deadness is monotonic).
 IsConverged(inc, pstates, nil, dead_state, alive_state) ==
     \A member \in Member :
         \A peer \in Member :
@@ -279,7 +229,7 @@ MemberThinksEveryoneIsDead(member, mem, pstates, dead_state) ==
     
 AllMembersThinkEveryoneIsDead ==
     \A member \in Member: MemberThinksEveryoneIsDead(member, Member, peer_states, DeadState) 
-    
+
 StopConditionReached ==
     \/ sim_status > 0
     \/ IF ForceRunToRound > 0
@@ -296,21 +246,13 @@ StopConditionReached ==
 \* Returns TRUE or FALSE as to whether an individual peer state is new for this member
 \* It is new only if:
 \* - its incarnation number is > than the known incarnation number of the target member
+\*   and the member is not considered dead (once dead, there is no coming back according to SWIM paper)
 \* - its incarnation number equals the known incarnation number of the target member but its state has higher precedence
 IsNewInformation(member, peer, peer_state) ==
-    \/ peer_state.incarnation > peer_states[member][peer].incarnation
+    \/ /\ peer_state.incarnation > peer_states[member][peer].incarnation
+       /\ peer_states[member][peer].state # DeadState
     \/ /\ peer_state.incarnation = peer_states[member][peer].incarnation
        /\ peer_state.state < peer_states[member][peer].state
-
-IsChainMsg(member, msg) ==
-    \/ /\ msg.type = ProbeRequestMessage 
-       /\ msg.source = member
-    \/ /\ msg.type = ProbeMessage
-       /\ msg.on_behalf_of = member
-    \/ /\ msg.type = AckMessage
-       /\ msg.on_behalf_of = member
-    \/ /\ msg.type = ForwardedAckMessage
-       /\ msg.dest = member
 
 (************************************************************************) 
 (******************** RECORD STATISTICS *********************************)
@@ -324,6 +266,44 @@ such as round and messages.
 At the end of a simulation, the statistics are gathered from the counters and variables and printed
 in CSV format.
 *)
+
+updates_pr_ctr(r) ==
+    (r * 100)
+
+eff_updates_pr_ctr(r) ==
+    (r * 100) + 1
+
+suspect_ctr(r) ==
+    (r * 100) + 2
+    
+suspect_states_ctr(r) ==
+    (r * 100) + 3
+    
+dead_ctr(r) ==
+    (r * 100) + 4
+    
+dead_states_ctr(r) ==
+    (r * 100) + 5    
+    
+alive_ctr(r) ==
+    (r * 100) + 6
+    
+alive_states_ctr(r) ==
+    (r * 100) + 7
+
+ResetStats(max_round) ==
+    \A r \in 1..max_round :
+        /\ TLCSet(updates_pr_ctr(r), 0)
+        /\ TLCSet(eff_updates_pr_ctr(r), 0)
+        /\ IF r = 1 
+           THEN /\ TLCSet(alive_ctr(r), initial_state_stats.alive_members)
+                /\ TLCSet(alive_states_ctr(r), initial_state_stats.alive_states)
+           ELSE /\ TLCSet(alive_ctr(r), 0)
+                /\ TLCSet(alive_states_ctr(r), 0)        
+        /\ TLCSet(suspect_ctr(r), 0)
+        /\ TLCSet(suspect_states_ctr(r), 0)
+        /\ TLCSet(dead_ctr(r), 0)
+        /\ TLCSet(dead_states_ctr(r), 0)
 
 MemberCount(state, target_peer_states) ==
     Cardinality({dest \in Member : 
@@ -349,7 +329,7 @@ StateCount(state, target_peer_states) ==
 CurrentStateCount(state) == StateCount(state, peer_states)
 NextStateStateCount(state) == StateCount(state, peer_states')
                 
-
+\* Does the step increment the round for one member such that now all members are on the same round?
 IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
     /\ \E m \in mem : r1[m] # r2[m]
     /\ \/ Cardinality({m \in mem : ~MemberThinksEveryoneIsDead(m, mem, pstates, dead_state)}) = 1
@@ -390,62 +370,70 @@ RecordIncomingGossipStats(member, gossip_source, incoming_peer_states, end_of_ro
        \* gossip counts
        /\ TLCSet(updates_ctr_id, TLCGet(updates_ctr_id) + Cardinality(DOMAIN incoming_peer_states))
        \* effective gossip counts
-       /\ LET effective_count == Cardinality({ m \in DOMAIN incoming_peer_states :
-                                                    IsNewInformation(member, m, incoming_peer_states[m])}) 
+       /\ LET effective_count == Quantify(DOMAIN incoming_peer_states, 
+                                          LAMBDA m : IsNewInformation(member, m, incoming_peer_states[m])) 
           IN TLCSet(eff_updates_ctr_id, TLCGet(eff_updates_ctr_id) + effective_count)
        \* suspect and dead counts
        /\ IF end_of_round THEN MayBeRecordMemberCounts ELSE TRUE         
 
+IsMessageOfMemberInRound(msg, member, r) ==
+    /\ \/ msg.source = member
+       \/ msg.dest = member
+    /\ msg.round = r
+
 MessageLoad(r, member) ==
-    Cardinality({
-        msg \in DOMAIN messages : 
-            /\ \/ msg.source = member
-               \/ msg.dest = member
-            /\ msg.round = r
-    })
+    Quantify(DOMAIN messages, LAMBDA msg : IsMessageOfMemberInRound(msg, member, r))
+
+IsIncomingMessageOfMemberInRound(msg, member, r) ==
+    /\ msg.dest = member
+    /\ msg.round = r
     
-IncomingMessageLoad(r, member) ==
-    Cardinality({
-        msg \in DOMAIN messages : 
-            /\ msg.dest = member
-            /\ msg.round = r
-    })
+IncomingMessageLoad(member, r) ==
+    Quantify(DOMAIN messages, LAMBDA msg : IsIncomingMessageOfMemberInRound(msg, member, r))
+   
+IsOutgoingMessageOfMemberInRound(msg, member, r) ==
+    /\ msg.dest = member
+    /\ msg.round = r
     
 OutgoingMessageLoad(r, member) ==
-    Cardinality({
-        msg \in DOMAIN messages : 
-            /\ msg.source = member
-            /\ msg.round = r
-    })
+    Quantify(DOMAIN messages, LAMBDA msg : IsOutgoingMessageOfMemberInRound(msg, member, r))
 
 PrintStats ==
     /\ LET max_stats_round == MaxRound
            cfg_str == "," \o ToString(Cardinality(Member)) 
                         \o "," \o ToString(DeadMemberCount)
+                        \o "," \o ToString(NewMemberCount)
                         \o "," \o ToString(SuspectTimeout)
                         \o "," \o ToString(DisseminationLimit)
                         \o "," \o ToString(MaxUpdatesPerPiggyBack)
+                        \o "," \o ToString(LoseEveryNth)
+                        \o "," \o ToString(PeerGroupSize)
+                        \o "," \o ToString(InitialContacts)
                         \o "," \o ToString(MaxRound)
                         \o ","
        IN
         /\ PrintT("rounds" \o cfg_str \o ToString(max_stats_round))
-        (*/\ \A r \in 1..max_stats_round : 
+        /\ \A r \in 1..max_stats_round : 
             \A member \in Member : 
                 IF incarnation[member] # Nil
                 THEN PrintT("message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(MessageLoad(r, member)))
                 ELSE TRUE
-        /\ \A r \in 1..max_stats_round : 
+        (*/\ \A r \in 1..max_stats_round : 
             \A member \in Member : 
                 IF incarnation[member] # Nil
-                THEN PrintT("incoming_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(IncomingMessageLoad(r, member)))
+                THEN PrintT("incoming_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(IncomingMessageLoad(member, r)))
                 ELSE TRUE
         /\ \A r \in 1..max_stats_round : 
             \A member \in Member : 
                 IF incarnation[member] # Nil
-                THEN PrintT("outgoing_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(OutgoingMessageLoad(r, member)))
+                THEN PrintT("outgoing_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(OutgoingMessageLoad(member, r)))
                 ELSE TRUE*)
-        (*/\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
+        /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
         /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
+        /\ \A r \in 1..max_stats_round : 
+            IF r = max_stats_round 
+            THEN PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(AliveState)))
+            ELSE PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_ctr(r))))
         /\ \A r \in 1..max_stats_round : 
             IF r = max_stats_round 
             THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(SuspectState)))
@@ -454,6 +442,10 @@ PrintStats ==
             IF r = max_stats_round 
             THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(DeadState)))
             ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
+        /\ \A r \in 1..max_stats_round :
+            IF r = max_stats_round 
+            THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
+            ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
         /\ \A r \in 1..max_stats_round : 
             IF r = max_stats_round 
             THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(SuspectState)))
@@ -462,20 +454,15 @@ PrintStats ==
             IF r = max_stats_round 
             THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(DeadState)))
             ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
-        /\ \A r \in 1..max_stats_round :
-            IF r = max_stats_round 
-            THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
-            ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
-        /\ PrintT("converged")*)
+        /\ PrintT("converged")
         /\ TLCDefer(ResetStats(max_stats_round))
-        /\ PrintT(<<"reset stats for each round up to", max_stats_round>>)
     
 EndSim ==
     /\ StopConditionReached
     /\ sim_status # 1
     /\ IF PrintStatsOnDeadlock = TRUE THEN PrintStats ELSE TRUE
     /\ sim_status' = 1
-    /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round>>
+    /\ UNCHANGED <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_stats>>
 
 RecordGossipStats(member, gossip_source, incoming_states, end_of_round) ==
     TLCDefer(RecordIncomingGossipStats(member, gossip_source, incoming_states, end_of_round))
@@ -520,8 +507,6 @@ ShareableState(peer_state) ==
     [incarnation |-> peer_state.incarnation,
      state       |-> peer_state.state]
 
-\* Select outgoing gossip based on multiple factors, including whether incoming gossip
-\* is newer than existing information
 SelectOutgoingGossip(member, dest_peer, merged_peer_states) ==
     LET candidate_peers == PeersUnderDisseminationsLimit(member, dest_peer, merged_peer_states)
     IN
@@ -532,10 +517,16 @@ SelectOutgoingGossip(member, dest_peer, merged_peer_states) ==
              
 \* Increment the dissemination counter of the peer states that have been gossiped             
 UpdatePeerStates(member, updated_peer_states, sent_peer_states) ==
-    peer_states' = [peer_states EXCEPT ![member] =  
+    /\ peer_states' = [peer_states EXCEPT ![member] =  
                         [peer \in Member |-> IF peer \in DOMAIN sent_peer_states
                                              THEN [updated_peer_states[peer] EXCEPT !.disseminations = @ + 1]
-                                             ELSE updated_peer_states[peer]]]         
+                                             ELSE updated_peer_states[peer]]]
+    /\ IF \E peer \in DOMAIN updated_peer_states :
+        /\ peer_states[member][peer].state = DeadState
+        /\ peer_states'[member][peer].state # DeadState
+       THEN sim_status' = -1
+       ELSE UNCHANGED sim_status
+                                                                 
 
 (************************************************************************) 
 (******************** INCOMING GOSSIP ***********************************)
@@ -581,11 +572,14 @@ MergeGossipWithCurrentState(member, gossip_source, source_incarnation, incoming_
 \* Updates the state and counters of a peer of the given member
 \* This is not called when an incarnation has changed, only a state change 
 \* like Alive->Suspect or Suspect->Dead
+\* When configured as SWIM v2, we skip suspect state and go straight to dead.
 UpdateState(member, peer, state) ==
-    peer_states' = [peer_states EXCEPT ![member][peer] =
-                        [@ EXCEPT !.state          = state,
-                                  !.disseminations = 0,
-                                  !.round          = round[member]]]
+    LET new_state == IF state = SuspectState /\ SuspectTimeout = 0 THEN DeadState ELSE state
+    IN
+        peer_states' = [peer_states EXCEPT ![member][peer] =
+                            [@ EXCEPT !.state          = new_state,
+                                      !.disseminations = 0,
+                                      !.round          = round[member]]]
 
 MayBeIncrementIncarnation(msg) ==
     IF msg.dest_state.state = SuspectState /\ msg.dest_state.incarnation = incarnation[msg.dest]
@@ -621,8 +615,8 @@ CurrentRoundComplete(member) ==
         /\ peer_states[member][peer].state = SuspectState
         /\ round[member] - peer_states[member][peer].round > SuspectTimeout
     /\ pending_indirect_ack[member] = Nil   
-    /\ pending_direct_ack[member] = Nil     
-
+    /\ pending_direct_ack[member] = Nil
+    
 \* The member knows of the peer's existence and it is not pending expiry
 IsValidProbeTarget(member, peer) ==
     /\ member # peer
@@ -643,17 +637,16 @@ IsValidRandomPick(member, peer) ==
 \* are both alive and who themselves still have peers they believe are alive (if a member
 \* thinks everyone else is dead, then it cannot take part in further rounds and
 \* is therefore not included in fair scheduling)
+\* It also ensures there are no outstanding messages regarding indirect probing for this member
 IsFairlyScheduled(member, peer) ==
-    \A m1 \in Member : 
+    /\ \A m1 \in Member : 
         \/ incarnation[m1] = Nil
         \/ \A m2 \in Member : m1 = m2 \/ peer_states[m1][m2].state = DeadState
         \/ /\ incarnation[m1] # Nil
            /\ round[member] <= round[m1]
-
-HasNoPendingRequests(member) ==
-    ~\E msg \in DOMAIN messages :
-        /\ msg.dest = member
-        /\ messages[msg] > 0
+    /\ ~\E msg \in DOMAIN messages :
+        /\ msg.on_behalf_of = member
+        /\ messages[msg] > 0  
 
 \* The sending of a direct probe is the beginning of a new protocol period.
 SendDirectProbe(member, peer) ==
@@ -664,7 +657,6 @@ SendDirectProbe(member, peer) ==
     /\ IsValidProbeTarget(member, peer)     \* The peer is valid (the member think it's not dead for example)
     /\ IsValidRandomPick(member, peer)      \* Peers are picked randomly, but in a balanced way
     /\ IsFairlyScheduled(member, peer)      \* For simulation - we keep all members within 1 round of each other
-    /\ HasNoPendingRequests(member)
     /\ LET gossip_to_send == SelectOutgoingGossip(member, peer, peer_states[member])
        IN
         /\ SendMessage([type         |-> ProbeMessage,
@@ -677,7 +669,7 @@ SendDirectProbe(member, peer) ==
                         gossip       |-> gossip_to_send])
         /\ UpdatePeerStates(member, peer_states[member], gossip_to_send)
         /\ RegisterPendingDirectAck(member, peer)
-        /\ UNCHANGED <<incarnation, pending_indirect_ack, round, sim_status >>
+        /\ UNCHANGED <<incarnation, pending_indirect_ack, round, initial_state_stats >>
 
 
         
@@ -713,9 +705,7 @@ SendAck(probe, source_incarnation, merged_peer_state, piggyback_gossip) ==
 ReceiveProbe ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
-        /\ msg.type = ProbeMessage
-        /\ messages[msg] >= 1
-        /\ incarnation[msg.dest] # Nil
+        /\ CanReceiveMessage(msg, ProbeMessage)
         /\ LET merged_peer_state == MergeGossipWithCurrentState(msg.dest, 
                                                               msg.source, 
                                                               msg.source_inc, 
@@ -727,7 +717,7 @@ ReceiveProbe ==
                /\ SendAck(msg, new_incarnation, merged_peer_state, send_gossip)
                /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr, sim_status >>
+    /\ UNCHANGED <<round, pending_direct_ack, pending_indirect_ack, probe_ctr, initial_state_stats >>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveAck ********************************)
@@ -740,9 +730,8 @@ Increments this member's round as this is the end of a protocol round
 ReceiveAck ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
-        /\ msg.type = AckMessage
-        /\ messages[msg] >= 1
-        /\ msg.on_behalf_of = Nil
+        /\ CanReceiveMessage(msg, AckMessage)
+        /\ msg.on_behalf_of = Nil \* this is a direct probe
         /\ msg.round = round[msg.dest]
         /\ LET merged_peer_state == MergeGossipWithCurrentState(msg.dest, 
                                                                 msg.source, 
@@ -756,7 +745,7 @@ ReceiveAck ==
             /\ MessageProcessed(msg)
             /\ IncrementRound(msg.dest)
             /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE)
-            /\ UNCHANGED << pending_indirect_ack, probe_ctr, sim_status>>
+            /\ UNCHANGED << pending_indirect_ack, probe_ctr, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: Expire ************************************)
@@ -764,7 +753,7 @@ ReceiveAck ==
 
 (* Notes
 Expires a suspected peer once it has reached the timeout.
-We can simulation variant 2 by setting the timeout to 0 which means
+We can run as variant 2 by setting the timeout to 0 which means
 immediate expiry.
 *)
 Expire(member, peer) ==
@@ -773,7 +762,8 @@ Expire(member, peer) ==
     /\ peer_states[member][peer].state = SuspectState
     /\ (round[member] - peer_states[member][peer].round) > SuspectTimeout
     /\ UpdateState(member, peer, DeadState)
-    /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status >>
+    /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, 
+                   probe_ctr, round, sim_status, initial_state_stats >>
 
 
 (************************************************************************) 
@@ -791,35 +781,36 @@ The number of probe requests is bounded by the minimum of:
 *)
 
 NewProbeRequest(member, peer, failed_peer, gossip_to_send) ==
-    [type       |-> ProbeRequestMessage,
-     source     |-> member,
-     dest       |-> peer,
-     target     |-> failed_peer,
-     dest_state |-> ShareableState(peer_states[member][peer]),
-     source_inc |-> incarnation[member],
-     round      |-> round[member],
-     gossip     |-> gossip_to_send]
+    [type         |-> ProbeRequestMessage,
+     source       |-> member,
+     dest         |-> peer,
+     target       |-> failed_peer,
+     on_behalf_of |-> Nil,
+     dest_state   |-> ShareableState(peer_states[member][peer]),
+     source_inc   |-> incarnation[member],
+     round        |-> round[member],
+     gossip       |-> gossip_to_send]
 
-AlreadySentProbeRequests(failed_probe) ==
-    {
-        msg \in DOMAIN messages :
-            /\ msg.type = ProbeRequestMessage
-            /\ msg.round = failed_probe.round
-            /\ msg.source = failed_probe.source
-    }
+IsPreviouslySentPR(msg, source, r) ==
+    /\ msg.type = ProbeRequestMessage
+    /\ msg.source = source
+    /\ msg.round = r
+    
 
-EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr) ==
+EligibleProbeRequestPeer(member, peer, failed_peer, r) ==
     /\ peer # member
     /\ peer # failed_peer
     /\ IsValidProbeTarget(member, peer)
-    /\ ~\E pr \in prev_pr : pr.dest = peer
+    /\ ~\E msg \in DOMAIN messages : 
+            /\ IsPreviouslySentPR(msg, member, r)
+            /\ msg.dest = peer 
 
-SendOneProbeRequest(failed_probe, prev_pr) == 
+SendOneProbeRequest(failed_probe) == 
     LET member      == failed_probe.source
         failed_peer == failed_probe.dest
     IN
         \E peer \in Member : 
-            /\ EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr)
+            /\ EligibleProbeRequestPeer(member, peer, failed_peer, failed_probe.round)
             /\ LET gossip_to_send == SelectOutgoingGossip(member, peer, peer_states[member])
                IN
                     /\ SendMessage(NewProbeRequest(member, peer, failed_peer, gossip_to_send))
@@ -842,29 +833,26 @@ SendProbeRequest ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ DirectProbeFailed(msg)
-        /\ LET prev_pr == AlreadySentProbeRequests(msg)
-           IN
-            /\ Cardinality(prev_pr) < PeerGroupSize
-            /\ SendOneProbeRequest(msg, prev_pr)
-        /\ UNCHANGED <<incarnation, probe_ctr, round, sim_status>>
+        /\ Quantify(DOMAIN messages, LAMBDA prev_msg : IsPreviouslySentPR(prev_msg, msg.source, msg.round)) < PeerGroupSize
+        /\ SendOneProbeRequest(msg)
+        /\ UNCHANGED <<incarnation, probe_ctr, round, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: NoPeersForProbeRequest ********************)
 (************************************************************************)
 
 (* Notes
-This is enabled when we haven't reached the PeerGroupSize limit on the number
-of probe requests sent, because there are no more valid peers left to send to.
+This is enabled when we haven't sent out any probe requests and 
+there are no valid peers to send to.
 *)
 
 NoEligiblePeersForProbeRequest(failed_probe) == 
     LET member      == failed_probe.source
         failed_peer == failed_probe.dest
-        prev_pr     == AlreadySentProbeRequests(failed_probe)
     IN
-        \/ Cardinality(prev_pr) = PeerGroupSize
+        \/ Quantify(DOMAIN messages, LAMBDA msg : IsPreviouslySentPR(msg, failed_probe.source, failed_probe.round)) >= PeerGroupSize
         \/ ~\E peer \in Member : 
-            EligibleProbeRequestPeer(member, peer, failed_peer, prev_pr)
+            EligibleProbeRequestPeer(member, peer, failed_peer, failed_probe.round)
 
 ProbeRequestsSent(member) ==
     \E msg \in DOMAIN messages :
@@ -878,18 +866,13 @@ NoPeersForProbeRequest ==
         /\ DirectProbeFailed(msg)
         /\ ~ProbeRequestsSent(msg.source)
         /\ NoEligiblePeersForProbeRequest(msg)
-        \* if there are no peers for sending out a probe request, and we haven't sent
-        \* any previously, then this is the end of this round for this member
         /\ IF peer_states[msg.source][msg.dest].state = AliveState
            THEN UpdateState(msg.source, msg.dest, SuspectState)
            ELSE UNCHANGED peer_states
-        /\ IF pending_indirect_ack[msg.source] = Nil
-           THEN /\ IncrementRound(msg.source)
-                /\ RecordStateStats
-           ELSE UNCHANGED <<round>>
+        /\ IncrementRound(msg.source)
+        /\ RecordStateStats
         /\ pending_direct_ack' = [pending_direct_ack EXCEPT ![msg.source] = Nil]
-        /\ UNCHANGED <<incarnation, messages, probe_ctr, pending_indirect_ack, sim_status>>
-    
+        /\ UNCHANGED <<incarnation, messages, probe_ctr, pending_indirect_ack, sim_status, initial_state_stats>>    
 
 (************************************************************************) 
 (******************** ACTION: ReceiveProbeRequest ***********************)
@@ -902,8 +885,7 @@ Receives a probe request and then sends a probe to the target peer.
 ReceiveProbeRequest ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
-        /\ msg.type = ProbeRequestMessage
-        /\ messages[msg] >= 1
+        /\ CanReceiveMessage(msg, ProbeRequestMessage)
         /\ LET merged_peer_state == MergeGossipWithCurrentState(msg.dest, 
                                                                 msg.source, 
                                                                 msg.source_inc, 
@@ -923,7 +905,7 @@ ReceiveProbeRequest ==
                                 gossip       |-> gossip_to_send])
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, gossip_to_send)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
-    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status >>
+    /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_stats >>
 
 
 (************************************************************************) 
@@ -939,21 +921,21 @@ request.
 *)
 
 ForwardedAck(msg, merged_peer_state, gossip_to_send) ==
-    [type       |-> ForwardedAckMessage,
-     source     |-> msg.dest,
-     dest       |-> msg.on_behalf_of,
-     target     |-> msg.source,
-     dest_state |-> ShareableState(merged_peer_state[msg.on_behalf_of]),
-     source_inc |-> incarnation[msg.dest],
-     round      |-> msg.round,
-     gossip     |-> gossip_to_send]
+    [type         |-> ForwardedAckMessage,
+     source       |-> msg.dest,
+     dest         |-> msg.on_behalf_of,
+     on_behalf_of |-> msg.on_behalf_of,
+     target       |-> msg.source,
+     dest_state   |-> ShareableState(merged_peer_state[msg.on_behalf_of]),
+     source_inc   |-> incarnation[msg.dest],
+     round        |-> msg.round,
+     gossip       |-> gossip_to_send]
 
 ReceiveProbeRequestAck ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
-        /\ msg.type = AckMessage
+        /\ CanReceiveMessage(msg, AckMessage)
         /\ msg.on_behalf_of # Nil
-        /\ messages[msg] >= 1
         /\ LET merged_peer_state == MergeGossipWithCurrentState(msg.dest, 
                                                                 msg.source, 
                                                                 msg.source_inc, 
@@ -965,7 +947,7 @@ ReceiveProbeRequestAck ==
                 /\ UpdatePeerStates(msg.dest, merged_peer_state, send_gossip)
                 /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, FALSE)
                 /\ ProcessedOneAndSendAnother(msg, ForwardedAck(msg, merged_peer_state, send_gossip))
-                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, sim_status>>
+                /\ UNCHANGED << pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: ReceiveForwardedAck ***********************)
@@ -982,8 +964,7 @@ and increments its own round as this is the end of a protocol round for this mem
 ReceiveForwardedAck ==
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
-        /\ msg.type = ForwardedAckMessage
-        /\ messages[msg] >= 1
+        /\ CanReceiveMessage(msg, ForwardedAckMessage)
         /\ LET merged_peer_state == MergeGossipWithCurrentState(msg.dest, 
                                                                 msg.source, 
                                                                 msg.source_inc, 
@@ -999,7 +980,7 @@ ReceiveForwardedAck ==
                     /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![msg.dest] = Nil]
                     /\ RecordGossipStats(msg.dest, msg.source, msg.gossip, TRUE) 
             /\ MessageProcessed(msg)
-            /\ UNCHANGED << pending_direct_ack, probe_ctr, sim_status>>
+            /\ UNCHANGED << pending_direct_ack, probe_ctr, initial_state_stats>>
 
 
 (************************************************************************) 
@@ -1055,7 +1036,7 @@ NoResponseToProbeRequests ==
                 /\ pending_indirect_ack' = [pending_indirect_ack EXCEPT ![member] = Nil]
                 /\ IncrementRound(member)
                 /\ RecordStateStats
-                /\ UNCHANGED <<incarnation, messages, pending_direct_ack, probe_ctr, sim_status>>
+                /\ UNCHANGED <<incarnation, messages, pending_direct_ack, probe_ctr, sim_status, initial_state_stats>>
 
 (************************************************************************) 
 (******************** ACTION: MemberJoins *******************************)
@@ -1068,7 +1049,6 @@ Joining is the act of informing it of the existence of InitialContactMemberCount
 that it can start probing.
 *)
 
-
 MemberJoins ==
     \E member \in Member :
         /\ incarnation[member] # Nil
@@ -1076,13 +1056,13 @@ MemberJoins ==
                              \/ peer_states[member][m].state = UnknownState
         /\ \E contact_peers \in SUBSET Member : 
             /\ \A p \in contact_peers : incarnation[p] # Nil
-            /\ Cardinality(contact_peers) = InitialContactMemberCount
+            /\ Cardinality(contact_peers) = InitialContacts
             /\ peer_states' = [peer_states EXCEPT ![member] =
                                     [m \in Member |-> IF m \in contact_peers
                                                       THEN KnownAliveStateRecord
                                                       ELSE UnknownStateRecord]]
             /\ UNCHANGED <<incarnation, messages, pending_direct_ack, pending_indirect_ack, 
-                           probe_ctr, round, sim_status >>
+                           probe_ctr, round, sim_status, initial_state_stats >>
 
 
 (************************************************************************) 
@@ -1106,12 +1086,43 @@ MemberLeaves ==
         /\ incarnation' = [incarnation EXCEPT ![m1] = Nil]
         /\ messages' = [msg \in DOMAIN messages |-> IF msg.dest = m1 THEN 0 ELSE messages[msg]]
         /\ UNCHANGED <<peer_states, pending_direct_ack, pending_indirect_ack, 
-                       probe_ctr, round, sim_status >>
+                       probe_ctr, round, sim_status, initial_state_stats >>
 
 
 (************************************************************************) 
-(******************** Next state and spec *******************************)
+(******************** Init, Next state and spec *************************)
 (************************************************************************)
+
+\* We can configure the initial state to start with a certain number of undetected states
+\* such as undetected dead members or undetected newly joined members.
+\* We can also configure some members to not have joined yet
+\* The rest will be started, and already know about each other and their peer state they have not being infective.
+\* This all allows us to test various scenarios easily
+Init ==
+    LET undetected_dead == CHOOSE s \in SUBSET Member : Cardinality(s) = DeadMemberCount
+    IN LET undetected_joined == CHOOSE s \in SUBSET (Member \ undetected_dead) : Cardinality(s) = NewMemberCount
+       IN LET contact_members == CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined)) : Cardinality(s) = InitialContacts
+          IN LET unjoined == CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined \union contact_members)) : Cardinality(s) = UnjoinedMemberCount
+             IN
+                /\ incarnation = [m \in Member |-> IF m \in undetected_dead THEN Nil ELSE 1]
+                /\ peer_states = [m \in Member |-> [m1 \in Member |-> 
+                                                        CASE m \in undetected_joined -> IF m1 \in contact_members
+                                                                                        THEN KnownAliveStateRecord
+                                                                                        ELSE UnknownStateRecord
+                                                          [] m \in undetected_dead   -> UnknownStateRecord
+                                                          [] m \in unjoined          -> UnknownStateRecord
+                                                          [] OTHER                   -> IF m1 \in undetected_joined \/ m1 \in unjoined
+                                                                                        THEN UnknownStateRecord
+                                                                                        ELSE KnownAliveStateRecord]]
+                /\ round = [m \in Member |-> 1]
+                /\ messages = [msg \in {} |-> 0]
+                /\ pending_direct_ack = [m \in Member |-> Nil]
+                /\ pending_indirect_ack = [m \in Member |-> Nil]
+                /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
+                /\ sim_status = 0
+                /\ initial_state_stats = [alive_states  |-> StateCount(AliveState, peer_states),
+                                          alive_members |-> Cardinality(Member) - Cardinality(unjoined)]
+                /\ ResetStats(1000)
 
 Next ==
     \/ \E member, peer \in Member : 
@@ -1127,6 +1138,7 @@ Next ==
     \/ NoResponseToProbeRequests
     \/ MemberJoins
     \/ MemberLeaves
+    \/ MessageIgnored
     \/ EndSim
 
 MemberOrNil ==
@@ -1155,13 +1167,16 @@ Inv ==
         ELSE Print(<<"C", IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)>>, FALSE)
     ELSE TRUE*)
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+Liveness ==
+    WF_vars(Next)
 
-Ensemble ==
+Spec == Init /\ [][Next]_vars 
+
+TestEnsemble ==
     1..10
 
 ============================================================================
 \* Modification History
-\* Last modified Mon Sep 14 06:56:07 PDT 2020 by jack
+\* Last modified Thu Sep 17 01:34:44 PDT 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
