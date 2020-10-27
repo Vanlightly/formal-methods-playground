@@ -1,0 +1,5 @@
+
+
+tlc-nightly -simulate ksubsets_random_subset.tla -deadlock -workers 1 -depth 100000 -config ksubsets.cfg
+
+tlc-nightly -simulate ksubsets_ex_quant.tla -deadlock -workers 1 -depth 100000 -config ksubsets.cfg
