@@ -300,4 +300,58 @@ IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
 
 		return res;
 	}
+
+
+	public static Value TotalInfectivity(final IntValue disseminationsLimit, final FcnRcdValue tps) {
+		assert tps.isNormalized();
+
+		int total = 0;
+
+		final Value[] domain = tps.domain;
+		for (int i = 0; i < domain.length; i++) {
+			for (int j = 0; j < domain.length; j++) {
+				final FcnRcdValue frv = (FcnRcdValue) tps.values[i];
+				final RecordValue rv = (RecordValue) frv.values[j];
+
+				int dissIndex = 0;
+				for (int n=0; n< rv.names.length; n++) {
+					if(rv.names[n].equals("disseminations")) {
+						dissIndex = n;
+						break;
+					}
+				}
+
+				final IntValue disseminations = (IntValue)rv.values[dissIndex];
+				total += (disseminationsLimit.val - disseminations.val);
+   			}
+		}
+		return IntValue.gen(total);
+	}
+
+	public static Value TotalInfectiveStates(final IntValue disseminationsLimit, final FcnRcdValue tps) {
+		assert tps.isNormalized();
+
+		int total = 0;
+
+		final Value[] domain = tps.domain;
+		for (int i = 0; i < domain.length; i++) {
+			for (int j = 0; j < domain.length; j++) {
+				final FcnRcdValue frv = (FcnRcdValue) tps.values[i];
+				final RecordValue rv = (RecordValue) frv.values[j];
+
+				int dissIndex = 0;
+				for (int n=0; n< rv.names.length; n++) {
+					if(rv.names[n].equals("disseminations")) {
+						dissIndex = n;
+						break;
+					}
+				}
+
+				final IntValue disseminations = (IntValue)rv.values[dissIndex];
+				if (disseminationsLimit.val - disseminations.val > 0 )
+					total++;
+			}
+		}
+		return IntValue.gen(total);
+	}
 }

@@ -29,7 +29,7 @@ Summary of modifications:
         
 *)
 
-EXTENDS Naturals, FiniteSets, FiniteSetsExt, Sequences, TLC, TLCExt, Integers
+EXTENDS Naturals, FiniteSets, FiniteSetsExt, Sequences, SequencesExt, TLC, TLCExt, Integers, Randomization
 
 
 CONSTANTS Nil,                      \* Empty numeric value
@@ -105,15 +105,18 @@ VARIABLES \* actual state in the protocol
           \* required for detecting some situations where convergence is not attainable
           initial_state_joined,
           initial_state_dead,
+          initial_state_unjoined,
           
           \* for simulation and stats
           sim_status,
           initial_state_stats       
+
+initial_state_vars == <<initial_state_joined, initial_state_dead, initial_state_stats, initial_state_unjoined>>
           
 vars == <<incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, 
-          initial_state_joined, initial_state_dead, sim_status, initial_state_stats>>
+          sim_status, initial_state_stats, initial_state_vars>>
 
-initial_state_vars == <<initial_state_joined, initial_state_dead, initial_state_stats>>
+
 (*****************************************************)
 (*************** Messaging passing *******************)
 (*****************************************************)
@@ -339,6 +342,12 @@ alive_ctr(r) ==
 alive_states_ctr(r) ==
     (r * 100) + 7
 
+infective_states_ctr(r) ==
+    (r * 100) + 8
+    
+infectivity_ctr(r) ==
+    (r * 100) + 9
+    
 ResetStats(max_round) ==
     \A r \in 1..max_round :
         /\ TLCSet(updates_pr_ctr(r), 0)
@@ -352,6 +361,8 @@ ResetStats(max_round) ==
         /\ TLCSet(suspect_states_ctr(r), 0)
         /\ TLCSet(dead_ctr(r), 0)
         /\ TLCSet(dead_states_ctr(r), 0)
+        /\ TLCSet(infective_states_ctr(r), 0)
+        /\ TLCSet(infectivity_ctr(r), 0)
 
 MemberCount(state, target_peer_states) ==
     Cardinality({dest \in Member : 
@@ -376,6 +387,16 @@ StateCount(state, target_peer_states) ==
 
 CurrentStateCount(state) == StateCount(state, peer_states)
 NextStateStateCount(state) == StateCount(state, peer_states')
+
+TotalInfectivity(disseminationsLimit, target_peer_states) ==
+    0 \* requires the override
+    
+    
+TotalInfectiveStates(disseminationsLimit, target_peer_states) ==
+    Cardinality({ pair \in SeqOf(Member, 2) : 
+                    /\ Len(pair) = 2
+                    /\ target_peer_states[pair[1]][pair[2]].disseminations < disseminationsLimit
+                })
                 
 \* Does the step increment the round for one member such that now all members are on the same round?
 IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
@@ -409,6 +430,8 @@ MayBeRecordMemberCounts ==
                 /\ TLCSet(suspect_states_ctr(r), NextStateStateCount(SuspectState))
                 /\ TLCSet(dead_states_ctr(r), NextStateStateCount(DeadState))
                 /\ TLCSet(alive_states_ctr(r), NextStateStateCount(AliveState))
+                /\ TLCSet(infective_states_ctr(r), TotalInfectiveStates(DisseminationLimit, peer_states))
+                /\ TLCSet(infectivity_ctr(r), TotalInfectivity(DisseminationLimit, peer_states))
         ELSE TRUE
 
 RecordIncomingGossipStats(member, gossip_source, incoming_peer_states, end_of_round) ==
@@ -424,6 +447,9 @@ RecordIncomingGossipStats(member, gossip_source, incoming_peer_states, end_of_ro
        \* suspect and dead counts
        /\ IF end_of_round THEN MayBeRecordMemberCounts ELSE TRUE         
 
+RoundMessageLoad(r) ==
+    Quantify(DOMAIN messages, LAMBDA msg : msg.round = r)
+
 IsMessageOfMemberInRound(msg, member, r) ==
     /\ \/ msg.source = member
        \/ msg.dest = member
@@ -438,7 +464,16 @@ IsIncomingMessageOfMemberInRound(msg, member, r) ==
     
 IncomingMessageLoad(member, r) ==
     Quantify(DOMAIN messages, LAMBDA msg : IsIncomingMessageOfMemberInRound(msg, member, r))
-   
+    
+ReceivedMessageLoad(member) ==
+    Quantify(DOMAIN messages, LAMBDA msg : msg.dest = member)
+    
+ReceivedProbeMessageLoad(member) ==
+    Quantify(DOMAIN messages, LAMBDA msg : msg.dest = member /\ msg.type = ProbeMessage /\ msg.on_behalf_of = Nil)
+    
+ReceivedProbeRequestMessageLoad(member) ==
+    Quantify(DOMAIN messages, LAMBDA msg : msg.dest = member /\ msg.type = ProbeRequestMessage)    
+    
 IsOutgoingMessageOfMemberInRound(msg, member, r) ==
     /\ msg.dest = member
     /\ msg.round = r
@@ -446,64 +481,98 @@ IsOutgoingMessageOfMemberInRound(msg, member, r) ==
 OutgoingMessageLoad(r, member) ==
     Quantify(DOMAIN messages, LAMBDA msg : IsOutgoingMessageOfMemberInRound(msg, member, r))
 
+DirectProbeDeadMessageLoad(r) ==
+    Quantify(DOMAIN messages, LAMBDA msg : 
+        /\ msg.round = r
+        /\ msg.type = ProbeMessage
+        /\ msg.on_behalf_of = Nil
+        /\ incarnation[msg.dest] = Nil)
+        
+IndirectProbeDeadMessageLoad(r) ==
+    Quantify(DOMAIN messages, LAMBDA msg : 
+        /\ msg.round = r
+        /\ msg.type = ProbeMessage
+        /\ msg.on_behalf_of # Nil
+        /\ incarnation[msg.dest] = Nil)        
+    
 PrintStats ==
-    /\ LET max_stats_round == MaxRound
-           cfg_str == "," \o ToString(Cardinality(Member)) 
-                        \o "," \o ToString(DeadMemberCount)
-                        \o "," \o ToString(NewMemberCount)
-                        \o "," \o ToString(SuspectTimeout)
-                        \o "," \o ToString(DisseminationLimit)
-                        \o "," \o ToString(MaxUpdatesPerPiggyBack)
-                        \o "," \o ToString(LoseEveryNth)
-                        \o "," \o ToString(PeerGroupSize)
-                        \o "," \o ToString(InitialContacts)
-                        \o "," \o ToString(MaxRound)
-                        \o ","
-       IN
-        /\ PrintT("rounds" \o cfg_str)
-        (*/\ \A r \in 1..max_stats_round : 
-            \A member \in Member : 
-                IF incarnation[member] # Nil
-                THEN PrintT("message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(MessageLoad(r, member)))
-                ELSE TRUE*)
-        (*/\ \A r \in 1..max_stats_round : 
-            \A member \in Member : 
-                IF incarnation[member] # Nil
-                THEN PrintT("incoming_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(IncomingMessageLoad(member, r)))
-                ELSE TRUE
-        /\ \A r \in 1..max_stats_round : 
-            \A member \in Member : 
-                IF incarnation[member] # Nil
-                THEN PrintT("outgoing_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(OutgoingMessageLoad(member, r)))
-                ELSE TRUE*)
-        /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
-        /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
-        /\ \A r \in 1..max_stats_round : 
-            IF r = max_stats_round 
-            THEN PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(AliveState)))
-            ELSE PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_ctr(r))))
-        /\ \A r \in 1..max_stats_round : 
-            IF r = max_stats_round 
-            THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(SuspectState)))
-            ELSE PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
-        /\ \A r \in 1..max_stats_round :
-            IF r = max_stats_round 
-            THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(DeadState)))
-            ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
-        /\ \A r \in 1..max_stats_round :
-            IF r = max_stats_round 
-            THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
-            ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
-        /\ \A r \in 1..max_stats_round : 
-            IF r = max_stats_round 
-            THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(SuspectState)))
-            ELSE PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_states_ctr(r))))
-        /\ \A r \in 1..max_stats_round :
-            IF r = max_stats_round 
-            THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(DeadState)))
-            ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
-        /\ PrintT("result")
-        /\ TLCDefer(ResetStats(max_stats_round))
+    \E exec_id \in { JavaTime } :
+        LET max_stats_round == MaxRound
+            cfg_str == 
+                        "," \o ToString(exec_id)
+                            \o "," \o ToString(Cardinality(Member)) 
+                            \o "," \o ToString(DeadMemberCount)
+                            \o "," \o ToString(NewMemberCount)
+                            \o "," \o ToString(SuspectTimeout)
+                            \o "," \o ToString(DisseminationLimit)
+                            \o "," \o ToString(MaxUpdatesPerPiggyBack)
+                            \o "," \o ToString(LoseEveryNth)
+                            \o "," \o ToString(PeerGroupSize)
+                            \o "," \o ToString(InitialContacts)
+                            \o "," \o ToString(MaxRound)
+                            \o ","
+           IN
+            /\ PrintT("rounds" \o cfg_str)
+            (*/\ \A r \in 1..max_stats_round : 
+                \A member \in Member : 
+                    IF incarnation[member] # Nil
+                    THEN PrintT("message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(MessageLoad(r, member)))
+                    ELSE TRUE*)
+            (*/\ \A r \in 1..max_stats_round : 
+                \A member \in Member : 
+                    IF incarnation[member] # Nil
+                    THEN PrintT("incoming_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(IncomingMessageLoad(member, r)))
+                    ELSE TRUE
+            /\ \A r \in 1..max_stats_round : 
+                \A member \in Member : 
+                    IF incarnation[member] # Nil
+                    THEN PrintT("outgoing_message_load_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(member) \o "," \o ToString(OutgoingMessageLoad(member, r)))
+                    ELSE TRUE*)
+            /\ \A member \in Member : 
+                PrintT("received_messages" \o cfg_str \o ToString(member) \o "," \o ToString(ReceivedMessageLoad(member)))
+            /\ \A member \in Member :
+                PrintT("received_probe_messages" \o cfg_str \o ToString(member) \o "," \o ToString(ReceivedProbeMessageLoad(member)))
+            /\ \A member \in Member : 
+                PrintT("received_probe_request_messages" \o cfg_str \o ToString(member) \o "," \o ToString(ReceivedProbeRequestMessageLoad(member)))    
+            /\ \A r \in 1..max_stats_round : PrintT("messages_exchanged" \o cfg_str \o ToString(r) \o "," \o ToString(RoundMessageLoad(r)))
+            /\ \A r \in 1..max_stats_round : PrintT("direct_probes_to_dead" \o cfg_str \o ToString(r) \o "," \o ToString(DirectProbeDeadMessageLoad(r)))
+            /\ \A r \in 1..max_stats_round : PrintT("indirect_probes_to_dead" \o cfg_str \o ToString(r) \o "," \o ToString(IndirectProbeDeadMessageLoad(r)))
+            /\ \A r \in 1..max_stats_round : PrintT("updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(updates_pr_ctr(r))))
+            /\ \A r \in 1..max_stats_round : PrintT("eff_updates_in_round" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(eff_updates_pr_ctr(r))))
+            /\ \A r \in 1..max_stats_round : 
+                IF r = max_stats_round 
+                THEN PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(AliveState)))
+                ELSE PrintT("alive_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_ctr(r))))
+            /\ \A r \in 1..max_stats_round : 
+                IF r = max_stats_round 
+                THEN PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(SuspectState)))
+                ELSE PrintT("suspected_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_ctr(r))))
+            /\ \A r \in 1..max_stats_round :
+                IF r = max_stats_round 
+                THEN PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentMemberCount(DeadState)))
+                ELSE PrintT("dead_members_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_ctr(r))))
+            /\ \A r \in 1..max_stats_round :
+                IF r = max_stats_round 
+                THEN PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(AliveState)))
+                ELSE PrintT("alive_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(alive_states_ctr(r))))
+            /\ \A r \in 1..max_stats_round : 
+                IF r = max_stats_round 
+                THEN PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(SuspectState)))
+                ELSE PrintT("suspect_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(suspect_states_ctr(r))))
+            /\ \A r \in 1..max_stats_round :
+                IF r = max_stats_round 
+                THEN PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(CurrentStateCount(DeadState)))
+                ELSE PrintT("dead_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(dead_states_ctr(r))))
+            /\ \A r \in 1..max_stats_round :
+                IF r = max_stats_round 
+                THEN PrintT("infective_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TotalInfectiveStates(DisseminationLimit, peer_states)))
+                ELSE PrintT("infective_states_count" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(infective_states_ctr(r))))
+            /\ \A r \in 1..max_stats_round :
+                IF r = max_stats_round 
+                THEN PrintT("infectivity" \o cfg_str \o ToString(r) \o "," \o ToString(TotalInfectivity(DisseminationLimit, peer_states)))
+                ELSE PrintT("infectivity" \o cfg_str \o ToString(r) \o "," \o ToString(TLCGet(infectivity_ctr(r))))
+            /\ PrintT("result")
+            /\ TLCDefer(ResetStats(max_stats_round))
 
 PrintNoConvergence ==
     /\ LET max_stats_round == MaxRound
@@ -1159,35 +1228,30 @@ MemberLeaves ==
 \* The rest will be started, and already know about each other and their peer state they have not being infective.
 \* This all allows us to test various scenarios easily
 Init ==
-    LET undetected_dead == CHOOSE s \in SUBSET Member : Cardinality(s) = DeadMemberCount
-    IN LET undetected_joined == CHOOSE s \in SUBSET (Member \ undetected_dead) : Cardinality(s) = NewMemberCount
-       IN LET unjoined == CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined)) : Cardinality(s) = UnjoinedMemberCount
-          IN
-            /\ incarnation = [m \in Member |-> IF m \in undetected_dead THEN Nil ELSE 1]
-            /\ peer_states = [m \in Member |-> [m1 \in Member |-> 
-                                                    CASE m \in undetected_joined -> IF m1 \in CHOOSE s \in SUBSET (Member \ (undetected_dead \union undetected_joined \union unjoined)) : 
-                                                                                            Cardinality(s) = InitialContacts
-                                                                                    THEN InitialContactStateRecord
-                                                                                    ELSE IF m = m1 
-                                                                                         THEN KnownAliveStateRecord
-                                                                                         ELSE UnknownStateRecord
-                                                      [] m \in undetected_dead   -> UnknownStateRecord
-                                                      [] m \in unjoined          -> UnknownStateRecord
-                                                      [] OTHER                   -> IF m1 \in undetected_joined \/ m1 \in unjoined
-                                                                                    THEN UnknownStateRecord
-                                                                                    ELSE KnownAliveStateRecord]]
-            /\ round = [m \in Member |-> 1]
-            /\ messages = [msg \in {} |-> 0]
-            /\ pending_direct_ack = [m \in Member |-> Nil]
-            /\ pending_indirect_ack = [m \in Member |-> Nil]
-            /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
-            /\ sim_status = 0
-            /\ initial_state_dead = undetected_dead
-            /\ initial_state_joined = undetected_joined
-            /\ initial_state_stats = [alive_states  |-> StateCount(AliveState, peer_states),
-                                      alive_members |-> Cardinality(Member) - Cardinality(unjoined)]
-            /\ ResetStats(1000)
-            /\ IF CannotConvergeOnJoined THEN PrintT("XXX") ELSE TRUE
+    /\ initial_state_dead = RandomSubset(DeadMemberCount, Member) 
+    /\ initial_state_joined = RandomSubset(NewMemberCount, (Member \ initial_state_dead))
+    /\ initial_state_unjoined = RandomSubset(UnjoinedMemberCount, (Member \ (initial_state_dead \union initial_state_joined))) 
+    /\ incarnation = [m \in Member |-> IF m \in initial_state_dead THEN Nil ELSE 1]
+    /\ peer_states = [m \in Member |-> [m1 \in Member |-> 
+                                            CASE m \in initial_state_joined   -> IF m1 \in RandomSubset(InitialContacts, (Member \ (initial_state_dead \union initial_state_joined \union initial_state_unjoined)))
+                                                                                 THEN InitialContactStateRecord
+                                                                                 ELSE IF m = m1 
+                                                                                      THEN KnownAliveStateRecord
+                                                                                      ELSE UnknownStateRecord
+                                              [] m \in initial_state_dead     -> UnknownStateRecord
+                                              [] m \in initial_state_unjoined -> UnknownStateRecord
+                                              [] OTHER                        -> IF m1 \in initial_state_joined \/ m1 \in initial_state_unjoined
+                                                                                 THEN UnknownStateRecord
+                                                                                 ELSE KnownAliveStateRecord]]
+    /\ round = [m \in Member |-> 1]
+    /\ messages = [msg \in {} |-> 0]
+    /\ pending_direct_ack = [m \in Member |-> Nil]
+    /\ pending_indirect_ack = [m \in Member |-> Nil]
+    /\ probe_ctr = [m \in Member |-> [m1 \in Member |-> 0]]
+    /\ sim_status = 0
+    /\ initial_state_stats = [alive_states  |-> StateCount(AliveState, peer_states),
+                              alive_members |-> Cardinality(Member) - Cardinality(initial_state_unjoined)]
+    /\ ResetStats(1000)
 
 Next ==
     \/ \E member, peer \in Member : 
@@ -1224,6 +1288,15 @@ TypeOK ==
     /\ probe_ctr \in [Member -> [Member -> Nat]]
     /\ sim_status \in Nat
 
+
+HasInfectiveInfo ==
+    IF \E m \in Member : round[m] > 4 
+    THEN \E m \in Member :
+           /\ \E m1 \in Member :
+               \*/\ peer_states[m][m1].disseminations > 0
+               /\ peer_states[m][m1].disseminations < DisseminationLimit
+    ELSE TRUE
+
 Inv ==
     TRUE
     \*/\ TLCGet("level") < 1000
@@ -1244,6 +1317,6 @@ TestEnsemble ==
 
 ============================================================================
 \* Modification History
-\* Last modified Wed Sep 23 05:26:50 PDT 2020 by jack
+\* Last modified Sun Nov 08 06:47:48 PST 2020 by jack
 \* Last modified Thu Oct 18 12:45:40 PDT 2018 by jordanhalterman
 \* Created Mon Oct 08 00:36:03 PDT 2018 by jordanhalterman
