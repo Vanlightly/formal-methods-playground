@@ -197,8 +197,8 @@ IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
 	public static Value IsNewRoundTransitionStep(final FcnRcdValue inc,
 												 final FcnRcdValue r1,
 												 final FcnRcdValue r2,
-												 final IntValue nil,
-												 final IntervalValue mem,
+												 final Value nil,
+												 final Value mem,
 												 final FcnRcdValue pstates,
 												 final IntValue deadState) {
 		assert inc.isNormalized();
