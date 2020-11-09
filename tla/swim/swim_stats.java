@@ -84,7 +84,7 @@ StateCount(state, target_peer_states) ==
     IN lower_to_higher + higher_to_lower
 	 */
 	public static Value StateCount(final IntValue state, final FcnRcdValue tps) {
-		assert tps.isNormalized();
+		tps.normalize();
 
 		int lowToHigh = 0;
 		int highToLow = 0;
