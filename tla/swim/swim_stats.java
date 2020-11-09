@@ -1,13 +1,11 @@
+import java.util.HashMap;
+import java.util.Map;
+
 import tlc2.value.impl.BoolValue;
 import tlc2.value.impl.FcnRcdValue;
 import tlc2.value.impl.IntValue;
-import tlc2.value.impl.IntervalValue;
-import tlc2.value.impl.ModelValue;
 import tlc2.value.impl.RecordValue;
 import tlc2.value.impl.Value;
-
-import java.util.HashMap;
-import java.util.Map;
 
 public class swim_stats {
 
