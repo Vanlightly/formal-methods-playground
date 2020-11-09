@@ -494,8 +494,17 @@ IndirectProbeDeadMessageLoad(r) ==
         /\ msg.type = ProbeMessage
         /\ msg.on_behalf_of # Nil
         /\ incarnation[msg.dest] = Nil)        
-    
+
+SK ==
+    55
+
 PrintStats ==
+    TLCSet(SK, [m \in Member |-> TLCGet(SK)[m] + ReceivedProbeRequestMessageLoad(m)])
+
+PostCond == 
+    PrintT(TLCGet(SK))
+
+OffPrintStats ==
     \E exec_id \in { JavaTime } :
         LET max_stats_round == MaxRound
             cfg_str == 
@@ -1228,6 +1237,7 @@ MemberLeaves ==
 \* The rest will be started, and already know about each other and their peer state they have not being infective.
 \* This all allows us to test various scenarios easily
 Init ==
+    /\ TLCSet(SK, [m \in Member |-> 0])
     /\ initial_state_dead = RandomSubset(DeadMemberCount, Member) 
     /\ initial_state_joined = RandomSubset(NewMemberCount, (Member \ initial_state_dead))
     /\ initial_state_unjoined = RandomSubset(UnjoinedMemberCount, (Member \ (initial_state_dead \union initial_state_joined))) 
