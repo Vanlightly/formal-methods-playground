@@ -112,7 +112,7 @@ def run_one_config(args,
     exit_code = subprocess.call(["bash", args.script, generated_spec, 
                     "spec.cfg",
                     args.behaviours,
-                    f"results/{args.output_dir}/{param_members}m_{param_dead}d_{param_new}n_{param_initial_contact}i_{param_peer_group_size}pg_{param_lose_every_nth}ln_{param_suspect_timeout}s_{param_disseminations}ds_{param_max_updates}u_{param_force_to_round}fr.log",
+                    f"{args.output_dir}/{param_members}m_{param_dead}d_{param_new}n_{param_initial_contact}i_{param_peer_group_size}pg_{param_lose_every_nth}ln_{param_suspect_timeout}s_{param_disseminations}ds_{param_max_updates}u_{param_force_to_round}fr.log",
                     args.workers], cwd=".")
     elapsed_time = time.time() - start_time
     print(f"Took: {int(elapsed_time)} seconds")
@@ -155,7 +155,7 @@ parser.add_argument('--force_to_round', help='Run the simulation till either eve
 args=parser.parse_args()
 
 
-Path(f"results/{args.output_dir}").mkdir(parents=True, exist_ok=True)
+Path(f"{args.output_dir}").mkdir(parents=True, exist_ok=True)
 
 print(f"Running a simulation for up to {args.behaviours} behaviours")
 
