@@ -495,14 +495,20 @@ IndirectProbeDeadMessageLoad(r) ==
         /\ msg.on_behalf_of # Nil
         /\ incarnation[msg.dest] = Nil)        
 
+TLCGetFold(i, P(_,_), base) ==
+    TRUE \* See module override for actual definition.
+
 SK ==
     55
 
 PrintStats ==
     TLCSet(SK, [m \in Member |-> TLCGet(SK)[m] + ReceivedProbeRequestMessageLoad(m)])
 
+Merge(seq1, seq2) ==
+    [ i \in DOMAIN seq1 |-> seq1[i] + seq2[i] ]
+
 PostCond == 
-    PrintT(TLCGet(SK))
+    PrintT(TLCGetFold(SK, Merge, [ m \in Member |-> 0]))
 
 OffPrintStats ==
     \E exec_id \in { JavaTime } :
