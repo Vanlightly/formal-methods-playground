@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# python3.6 calculate_stats.py --raw_output_dir "$(pwd)/results/xyz" --analysis_dir "$(pwd)/analysis"
+
 import argparse
 import sys
 import re 
@@ -9,6 +11,7 @@ from os.path import isfile, join, basename
 from pathlib import Path
 from RoundStats import RoundStats
 from MemberStats import MemberStats
+from ExecutionStats import ExecutionStats
 
 def percentile(N, percent, key=lambda x:x):
     """
@@ -107,6 +110,27 @@ def add_metric(metric_dict, match):
     
     metric_dict[key].append(value)    
 
+def ensure_execution_metric(executions_dict, match):
+    exec_no = int(match.group(1))
+    member_count = int(match.group(2))
+    dead_count = int(match.group(3))
+    new_count = int(match.group(4))
+    suspect_timeout = int(match.group(5))
+    dis_count = int(match.group(6))
+    max_update_count = int(match.group(7))
+    lose_every_nth = int(match.group(8))
+    peer_group_size = int(match.group(9))
+    initial_contacts = int(match.group(10))
+    total_rounds = int(match.group(11))
+    round_no = int(match.group(12))
+    value = int(match.group(13))
+
+    if exec_no not in executions_dict:
+        executions_dict[exec_no] = ExecutionStats(exec_no, member_count, dead_count, new_count, suspect_timeout, dis_count, max_update_count,\
+           lose_every_nth, peer_group_size, initial_contacts)
+
+    return (exec_no, round_no, value)
+
 def get_percentile_fields(metric_name):
     return f"{metric_name} min,{metric_name} p50,{metric_name} p75,{metric_name} p95,{metric_name} p99,{metric_name} max"
 
@@ -117,7 +141,14 @@ def get_percentile_values(values):
                     + "," + str(percentile(values, 0.95)) \
                     + "," + str(percentile(values, 0.99)) \
                     + "," + str(max(values))
-            
+
+def process_round_match(match, name, per_round_metrics, per_exec_metrics):
+    (key, value) = ensure_rounds_metric(per_round_metrics, match)
+    per_round_metrics[key].add_metric(name, value)
+    
+    (exec_no, round_no, value2) = ensure_execution_metric(per_exec_metrics, match)
+    per_exec_metrics[exec_no].add_metric(round_no, name, value2)
+
 parser=argparse.ArgumentParser()
 
 parser.add_argument('--raw_output_dir', help='The directory which contains the tlc output files')
@@ -131,6 +162,7 @@ Path(f"{args.analysis_dir}").mkdir(parents=True, exist_ok=True)
 rounds = dict()
 per_round_metrics = dict()
 per_member_metrics = dict()
+per_exec_metrics = dict()
 
 result_files = [join(args.raw_output_dir, f) for f in listdir(args.raw_output_dir) if isfile(join(args.raw_output_dir, f))]
 
@@ -161,91 +193,67 @@ for result_file in result_files:
 
         updates_in_round_match = re.match( r'^"updates_in_round,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if updates_in_round_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, updates_in_round_match)
-            #per_round_metrics[key].add_updates_in_round(value)
-            per_round_metrics[key].add_metric("updates_in_round", value)
+            process_round_match(updates_in_round_match, "updates_in_round", per_round_metrics, per_exec_metrics)
             continue
 
         eff_updates_in_round_match = re.match( r'^"eff_updates_in_round,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if eff_updates_in_round_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, eff_updates_in_round_match)
-            #per_round_metrics[key].add_eff_updates_in_round(value)
-            per_round_metrics[key].add_metric("eff_updates_in_round", value)
+            process_round_match(eff_updates_in_round_match, "eff_updates_in_round", per_round_metrics, per_exec_metrics)
             continue
 
         alive_members_count_match = re.match( r'^"alive_members_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if alive_members_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, alive_members_count_match)
-            #per_round_metrics[key].add_alive_members_count(value)
-            per_round_metrics[key].add_metric("alive_members_count", value)
+            process_round_match(alive_members_count_match, "alive_members_count", per_round_metrics, per_exec_metrics)
             continue
 
         suspected_members_count_match = re.match( r'^"suspected_members_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if suspected_members_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, suspected_members_count_match)
-            #per_round_metrics[key].add_suspected_members_count(value)
-            per_round_metrics[key].add_metric("suspected_members_count", value)
+            process_round_match(suspected_members_count_match, "suspected_members_count", per_round_metrics, per_exec_metrics)
             continue
 
         dead_members_count_match = re.match( r'^"dead_members_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if dead_members_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, dead_members_count_match)
-            #per_round_metrics[key].add_dead_members_count(value)
-            per_round_metrics[key].add_metric("dead_members_count", value)
+            process_round_match(dead_members_count_match, "dead_members_count", per_round_metrics, per_exec_metrics)
             continue
 
         alive_states_count_match = re.match( r'^"alive_states_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if alive_states_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, alive_states_count_match)
-            #per_round_metrics[key].add_alive_states_count(value)
-            per_round_metrics[key].add_metric("alive_states_count", value)
+            process_round_match(alive_states_count_match, "alive_states_count", per_round_metrics, per_exec_metrics)
             continue
         
         suspect_states_count_match = re.match( r'^"suspect_states_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if suspect_states_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, suspect_states_count_match)
-            #per_round_metrics[key].add_suspect_states_count(value)
-            per_round_metrics[key].add_metric("suspect_states_count", value)
+            process_round_match(suspect_states_count_match, "suspect_states_count", per_round_metrics, per_exec_metrics)
             continue
 
         dead_states_count_match = re.match( r'^"dead_states_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if dead_states_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, dead_states_count_match)
-            #per_round_metrics[key].add_dead_states_count(value)
-            per_round_metrics[key].add_metric("dead_states_count", value)
+            process_round_match(dead_states_count_match, "dead_states_count", per_round_metrics, per_exec_metrics)
             continue
 
         infective_states_count_match = re.match( r'^"infective_states_count,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if infective_states_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, infective_states_count_match)
-            #per_round_metrics[key].add_infective_states_count(value)
-            per_round_metrics[key].add_metric("infective_states_count", value)
+            process_round_match(infective_states_count_match, "infective_states_count", per_round_metrics, per_exec_metrics)
             continue
 
         infectivity_count_match = re.match( r'^"infectivity,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if infectivity_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, infectivity_count_match)
-            #per_round_metrics[key].add_infectivity_count(value)
-            per_round_metrics[key].add_metric("infectivity", value)
+            process_round_match(infectivity_count_match, "infectivity", per_round_metrics, per_exec_metrics)
             continue
 
         messages_count_match = re.match( r'^"messages_exchanged,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if messages_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, messages_count_match)
-            #per_round_metrics[key].add_messages_exchanged_count(value)
-            per_round_metrics[key].add_metric("messages_exchanged", value)
+            process_round_match(messages_count_match, "messages_exchanged", per_round_metrics, per_exec_metrics)
             continue
 
         direct_probes_to_dead_count_match = re.match( r'^"direct_probes_to_dead,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if direct_probes_to_dead_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, direct_probes_to_dead_count_match)
-            per_round_metrics[key].add_metric("direct_probes_to_dead", value)
+            process_round_match(direct_probes_to_dead_count_match, "direct_probes_to_dead", per_round_metrics, per_exec_metrics)
             continue
 
         indirect_probes_to_dead_count_match = re.match( r'^"indirect_probes_to_dead,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
         if indirect_probes_to_dead_count_match:
-            (key, value) = ensure_rounds_metric(per_round_metrics, indirect_probes_to_dead_count_match)
-            per_round_metrics[key].add_metric("indirect_probes_to_dead", value)
+            process_round_match(indirect_probes_to_dead_count_match, "indirect_probes_to_dead", per_round_metrics, per_exec_metrics)
             continue
 
         received_msg_count_match = re.match( r'^"received_messages,' + middle_match + ',(\d*),(\d*)".*', line, re.M|re.I)
@@ -293,7 +301,9 @@ for key in rounds.keys():
 
 f.close()
 
-# Rounds stats
+print("Written rounds to convergence to " + filepath)
+
+# Rounds aggregated stats
 filepath = join(args.analysis_dir, basename(args.raw_output_dir) + "-round-stats.csv")
 f = open(filepath, "a")
 
@@ -313,8 +323,6 @@ f.write(f"TotalRounds,Round" \
         + f",{get_percentile_fields('DirectProbesToDead')}" \
         + f",{get_percentile_fields('IndirectProbesToDead')}" \
         + ",Behaviours\n")
-
-print("Written Rounds to Converge stats to " + filepath)
         
 for key in per_round_metrics.keys():    
     # try:
@@ -387,6 +395,84 @@ for key in per_round_metrics.keys():
 
 f.close()
 print("Written per round stats to " + filepath)
+
+# Rounds per execution stats
+filepath = join(args.analysis_dir, basename(args.raw_output_dir) + "-per-exec-round-stats.csv")
+f = open(filepath, "a")
+
+f.write(f"ExecNo,TotalRounds,Round" \
+        + f",{parameter_names}"
+        + f",'Updates'" \
+        + f",'EffUpdates'" \
+        + f",'AliveMembers'" \
+        + f",'SuspectMembers'" \
+        + f",'DeadMembers'" \
+        + f",'AliveStates'" \
+        + f",'SuspectStates'" \
+        + f",'DeadStates'" \
+        + f",'InfectiveStates'" \
+        + f",'Infectivity'" \
+        + f",'Messages'" \
+        + f",'DirectProbesToDead'" \
+        + f",'IndirectProbesToDead'\n")
+
+total_round_ctr = dict()
+
+for exec_no in per_exec_metrics.keys():    
+    # try:
+    exec_stats = per_exec_metrics[exec_no]
+
+    if exec_stats.total_rounds not in total_round_ctr:
+        total_round_ctr[exec_stats.total_rounds] = 1
+    else:
+        total_round_ctr[exec_stats.total_rounds] = total_round_ctr[exec_stats.total_rounds] + 1
+
+    if total_round_ctr[exec_stats.total_rounds] >= 101:
+        continue
+
+    if exec_stats.lose_every_nth == 0:
+        message_loss = 0
+    else:
+        message_loss = round(float(1.0 / exec_stats.lose_every_nth)*100, 1)
+
+    for round_no in range(1, exec_stats.total_rounds+1):
+        if not exec_stats.has_round(round_no):
+            continue
+
+        updates = exec_stats.get_metric(round_no, "updates_in_round")
+        eff_updates = exec_stats.get_metric(round_no, "eff_updates_in_round")
+        alive_members_count = exec_stats.get_metric(round_no, "alive_members_count")
+        suspected_members_count = exec_stats.get_metric(round_no, "suspected_members_count")
+        dead_members_count = exec_stats.get_metric(round_no, "dead_members_count")
+        alive_states_count = exec_stats.get_metric(round_no, "alive_states_count")
+        suspect_states_count = exec_stats.get_metric(round_no, "suspect_states_count")
+        dead_states_count = exec_stats.get_metric(round_no, "dead_states_count")
+        infective_states_count = exec_stats.get_metric(round_no, "infective_states_count")
+        infectivity_count = exec_stats.get_metric(round_no, "infectivity")
+        messages_count = exec_stats.get_metric(round_no, "messages_exchanged")
+        direct_probes_to_dead_count = exec_stats.get_metric(round_no, "direct_probes_to_dead")
+        indirect_probes_to_dead_count = exec_stats.get_metric(round_no, "indirect_probes_to_dead")
+
+        param_values = f"{exec_stats.member_count},{exec_stats.dead_count},{exec_stats.new_count},{exec_stats.suspect_timeout},{exec_stats.disseminations},{exec_stats.max_updates},{message_loss},{exec_stats.peer_group_size},{exec_stats.initial_contacts}"
+        
+        f.write(f"{exec_no},{exec_stats.total_rounds},{round_no}" \
+            + f",{param_values}" \
+            + f",{updates}" \
+            + f",{eff_updates}" \
+            + f",{alive_members_count}" \
+            + f",{suspected_members_count}" \
+            + f",{dead_members_count}" \
+            + f",{alive_states_count}" \
+            + f",{suspect_states_count}" \
+            + f",{dead_states_count}" \
+            + f",{infective_states_count}" \
+            + f",{infectivity_count}" \
+            + f",{messages_count}" \
+            + f",{direct_probes_to_dead_count}" \
+            + f",{indirect_probes_to_dead_count}\n")
+
+f.close()
+print("Written per execution round stats to " + filepath)
 
 # Members stats
 filepath = join(args.analysis_dir, basename(args.raw_output_dir) + "-member-stats.csv")
