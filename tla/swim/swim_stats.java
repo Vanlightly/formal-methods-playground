@@ -1,13 +1,19 @@
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import tlc2.TLCGlobals;
+import tlc2.output.EC;
+import tlc2.tool.EvalControl;
+import tlc2.tool.EvalException;
+import tlc2.value.IValue;
+import tlc2.value.Values;
 import tlc2.value.impl.BoolValue;
 import tlc2.value.impl.FcnRcdValue;
 import tlc2.value.impl.IntValue;
-import tlc2.value.impl.IntervalValue;
-import tlc2.value.impl.ModelValue;
+import tlc2.value.impl.OpLambdaValue;
 import tlc2.value.impl.RecordValue;
 import tlc2.value.impl.Value;
-
-import java.util.HashMap;
-import java.util.Map;
 
 public class swim_stats {
 
@@ -86,7 +92,7 @@ StateCount(state, target_peer_states) ==
     IN lower_to_higher + higher_to_lower
 	 */
 	public static Value StateCount(final IntValue state, final FcnRcdValue tps) {
-		assert tps.isNormalized();
+		tps.normalize();
 
 		int lowToHigh = 0;
 		int highToLow = 0;
@@ -199,8 +205,8 @@ IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
 	public static Value IsNewRoundTransitionStep(final FcnRcdValue inc,
 												 final FcnRcdValue r1,
 												 final FcnRcdValue r2,
-												 final IntValue nil,
-												 final IntervalValue mem,
+												 final Value nil,
+												 final Value mem,
 												 final FcnRcdValue pstates,
 												 final IntValue deadState) {
 		assert inc.isNormalized();
@@ -353,5 +359,39 @@ IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
 			}
 		}
 		return IntValue.gen(total);
+	}
+	
+	/*
+	 * f is an 2-arity operator. z is the initial value of the
+	 * accumulator and the initial, second argument of the operator f.
+	 */
+// Uncomment if moved to CommunityModules.
+//	@TLAPlusOperator(identifier = "TLCGetFold", module = "TLCExt", warn = false)
+	public static Value TLCGetFold(final Value vidx, final Value f, final Value z) {
+		if (!(vidx instanceof IntValue)) {
+	        throw new EvalException(EC.TLC_MODULE_ARGUMENT_ERROR, new String[] { "first", "TLCGetFold",
+	                "nonnegative integer", Values.ppr(vidx.toString()) });
+		}
+		if (!(f instanceof OpLambdaValue)) {
+	        throw new EvalException(EC.TLC_MODULE_ARGUMENT_ERROR, new String[] { "second", "TLCGetFold",
+	                "two-arity operator", Values.ppr(f.toString()) });
+		}
+		
+		final List<IValue> vals;
+		// .getAllValues requires TLC as of 11/09/2020 commit b4a46e90c0a21878b443d4d340b150ac2904bca8
+		if (TLCGlobals.mainChecker != null) {
+			vals = tlc2.TLCGlobals.mainChecker.getAllValues(((IntValue) vidx).val);
+		} else /*if (tlc2.TLCGlobals.simulator != null) */{
+			vals = tlc2.TLCGlobals.simulator.getAllValues(((IntValue) vidx).val);
+//		} else {
+//			vals = new ArrayList<>();
+		}
+
+		final Value[] arg = new Value[] {z, z};
+		for (int i = 0; i < vals.size(); i++) {
+			arg[0] = (Value) vals.get(i);
+			arg[1] = ((OpLambdaValue) f).apply(arg, EvalControl.Clear);
+		}
+		return arg[1];
 	}
 }
