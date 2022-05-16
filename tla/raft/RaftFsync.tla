@@ -26,7 +26,25 @@ This is a model checking optimized fork of original spec.
 Notes on action enablement.
  - Send is only enabled if the mesage has not been previously sent.
    This is leveraged to disable actions once executed, such as sending a specific 
-   AppendEntrieRequest. It won't be sent again, so need for extra variables to track that. 
+   AppendEntrieRequest. It won't be sent again, so need for extra variables to track that.
+   
+Fsync behaviour.
+
+A new variable fsyncIndex and a new action AdvanceFsyncIndex added to the spec.
+The fsyncIndex indicates up to which index is persisted to stable storage.
+
+There are three new boolean constants that let you experiment:
+- FollowerFsyncBeforeReply: followers fsync or not before responding to append entries RPC
+- LeaderFsyncBeforeAppendEntries: leaders fsync or not before sending append entries RPC
+- LeaderFsyncBeforeIncludeInQuorum: when advancing the commit index, leaders include themselves or not
+  from the agree quorum for entries above the fsyncIndex
+  
+You can for example say that followers always fsync before repling, and leaders only include
+themselves in quorum for entries equal to or below the fsync index with:
+- FollowerFsyncBeforeReply: TRUE
+- LeaderFsyncBeforeAppendEntries: FALSE
+- LeaderFsyncBeforeIncludeInQuorum: TRUE
+  
 *)
 
 EXTENDS Naturals, FiniteSets, Sequences, TLC
@@ -52,7 +70,7 @@ CONSTANTS EqualTerm, LessOrEqualTerm
 
 \* Behaviour related to fsync
 CONSTANTS LeaderFsyncBeforeAppendEntries,
-          LeaderFsyncBeforeCommit,
+          LeaderFsyncBeforeIncludeInQuorum,
           FollowerFsyncBeforeReply
 
 \* Limiting state space by limiting the number of elections and restarts           
@@ -303,18 +321,19 @@ ClientRequest(i, v) ==
 \* This is done as a separate step from handling AppendEntries responses,
 \* in part to minimize atomic regions, and in part so that leaders of
 \* single-server clusters are able to mark entries committed.
-StableLastIndex(i) ==
-    IF LeaderFsyncBeforeCommit
-    THEN fsyncIndex[i]
-    ELSE Len(log[i])
-
+\*
+\* FSYNCS
+\* When LeaderFsyncBeforeCommit=TRUE and the index is above the fsyncIndex
+\* for that leader, then the leader does not include itself in the quorum
+\* However, when LeaderFsyncBeforeCommit=FALSE, it will include itself regardless.
 AdvanceCommitIndex(i) ==
     /\ state[i] = Leader
     /\ LET \* The set of servers that agree up through index.
-           Agree(index) == {i} \cup {k \in Server :
-                                         /\ matchIndex[i][k] >= index }
+           Agree(index) == IF LeaderFsyncBeforeIncludeInQuorum /\ index > fsyncIndex[i]
+                           THEN {k \in Server : matchIndex[i][k] >= index } \* excludes itself                          
+                           ELSE {i} \cup {k \in Server : matchIndex[i][k] >= index }
            \* The maximum indexes for which a quorum agrees
-           agreeIndexes == {index \in 1..StableLastIndex(i) : 
+           agreeIndexes == {index \in 1..Len(log[i]) : 
                                 Agree(index) \in Quorum}
            \* New value for commitIndex'[i]
            newCommitIndex ==
