@@ -1,0 +1,9 @@
+#!/bin/sh
+
+DEFAULT_JAVA_OPTS="-XX:+IgnoreUnrecognizedVMOptions -XX:+UseParallelGC -Xmx16g -Xss4m -DTLA-Library=~/tlc -Dtlc2.tool.impl.Tool.probabilistic=true"
+
+if [ -z "$JAVA_OPTS" ]; then
+  JAVA_OPTS="$DEFAULT_JAVA_OPTS"
+fi
+
+exec java $JAVA_OPTS -cp ~/tlc/tla2tools.jar:~/tlc/* tlc2.TLC "$@"
