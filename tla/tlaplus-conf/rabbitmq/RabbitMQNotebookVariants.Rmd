@@ -9,20 +9,14 @@ library(ggplot2)
 library(dplyr)
 library(tibble)
 
-# title <- "Sequential start of all clients"
-# suffix <- "Seq20Variants"
+title <- "Sequential start of all clients"
+suffix <- "Sequential20"
 
 # title <- "Concurrent start of all clients"
-# suffix <- "Random20Variants"
+# suffix <- "Concurrent20"
 
-title <- "Add one client"
-suffix <- "Random20VariantsAdd"
-
-# title <- "Sequential start of all clients - Optimized"
-# suffix <- "SeqOpt20"
-
-# title <- "Concurrent start of all clients - Optimized"
-# suffix <- "RandomOpt20"
+# title <- "Add one client"
+# suffix <- "Random20VariantsAdd"
 
 title <- as_tibble(title)
 raw_total_rel_df <- read.csv(file = paste("results/raw/TotalReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
