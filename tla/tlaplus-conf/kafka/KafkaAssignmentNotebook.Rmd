@@ -1,0 +1,280 @@
+---
+title: "Kafka Resource Rebalancing Protocol"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(sqldf)
+
+raw_df <- read.csv(file = "/home/jack/stats/kafka/protocol3.csv", stringsAsFactors = TRUE)
+rev_pct_df <- read.csv(file = "/home/jack/stats/kafka/agg_Revocations__protocol3.csv", stringsAsFactors = TRUE)
+hb_pct_df <- read.csv(file = "/home/jack/stats/kafka/agg_Heartbeats__protocol3.csv", stringsAsFactors = TRUE)
+dist_pct_df <- read.csv(file = "/home/jack/stats/kafka/agg_Distance__protocol3.csv", stringsAsFactors = TRUE)
+
+filtered <- dplyr::filter(raw_df, InitNumRes==40)
+all_strats <- dplyr::filter(raw_df, InitNumRes==40 & (Strategy == "range"
+                                                      | Strategy == "roundrobin"
+                                                      | (Strategy == "stickyfairsimple" & StrategyParam == 1)))
+rangeData <- dplyr::filter(filtered, Strategy == "range")
+rrData <- dplyr::filter(filtered, Strategy == "roundrobin")
+
+stickySimpleAll <- dplyr::filter(filtered, Strategy == "stickyfairsimple")
+stickySimple1 <- dplyr::filter(filtered, Strategy == "stickyfairsimple" & StrategyParam == 1)
+stickySimple2 <- dplyr::filter(filtered, Strategy == "stickyfairsimple" & StrategyParam == 2)
+stickySimple3 <- dplyr::filter(filtered, Strategy == "stickyfairsimple" & StrategyParam == 3)
+stickySimple4 <- dplyr::filter(filtered, Strategy == "stickyfairsimple" & StrategyParam == 4)
+
+stickyDistAll <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam <= 6)
+stickyDist1 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 1)
+stickyDist2 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 2)
+stickyDist3 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 3)
+stickyDist4 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 4)
+stickyDist5 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 5)
+stickyDist6 <- dplyr::filter(filtered, Strategy == "stickyfairdistance" & StrategyParam == 6)
+
+range_rev_pct_df <- dplyr::filter(rev_pct_df, Strategy == "range" & InitNumRes==40)
+rr_rev_pct_df <- dplyr::filter(rev_pct_df, Strategy == "roundrobin" & InitNumRes==40)
+sticky_rev_pct_df <- dplyr::filter(rev_pct_df, Strategy == "stickyfairsimple" & StrategyParam == 1 & InitNumRes==40)
+
+range_hb_pct_df <- dplyr::filter(hb_pct_df, Strategy == "range" & InitNumRes==40)
+rr_hb_pct_df <- dplyr::filter(hb_pct_df, Strategy == "roundrobin" & InitNumRes==40)
+sticky_hb_pct_df <- dplyr::filter(hb_pct_df, Strategy == "stickyfairsimple" & StrategyParam == 1 & InitNumRes==40)
+
+allGrouped <- group_by(all_strats,Strategy,InitNumCts)
+rangeGrouped <- group_by(rangeData,InitNumCts)
+rrGrouped <- group_by(rrData,InitNumCts)
+stickySimpleGroupedAll <- group_by(stickySimpleAll,StrategyParam,InitNumCts)
+stickySimpleGrouped1 <- group_by(stickySimple1,InitNumCts)
+stickySimpleGrouped2 <- group_by(stickySimple2,InitNumCts)
+stickySimpleGrouped3 <- group_by(stickySimple3,InitNumCts)
+stickySimpleGrouped4 <- group_by(stickySimple4,InitNumCts)
+stickyDistanceGroupedAll <- group_by(stickyDistAll,StrategyParam,InitNumCts)
+stickyDistanceGrouped1 <- group_by(stickyDist1,InitNumCts)
+stickyDistanceGrouped2 <- group_by(stickyDist2,InitNumCts)
+stickyDistanceGrouped3 <- group_by(stickyDist3,InitNumCts)
+stickyDistanceGrouped4 <- group_by(stickyDist4,InitNumCts)
+stickyDistanceGrouped5 <- group_by(stickyDist5,InitNumCts)
+stickyDistanceGrouped6 <- group_by(stickyDist6,InitNumCts)
+
+stratSummary <- function(df) {
+   summarise(df,
+             mean_rev = mean(Revocations),
+             var_rev = var(Revocations),
+             sd_rev = sd(Revocations),
+             mean_hb = mean(Heartbeats),
+             var_hb = var(Heartbeats),
+             sd_hb = sd(Heartbeats),
+             mean_rounds =  mean(Heartbeats) / mean(InitNumCts))
+}
+
+sd_rev_plot <- function(summry, strat) {
+  ggplot(summry, 
+       aes(x = InitNumCts, y = mean_rev, fill = InitNumCts)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rev-sd_rev, ymax=mean_rev+sd_rev), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Revocations",
+    title = "Revocations with standard dev",
+    subtitle = paste("Resources: 40, assignment strategy:", strat)
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+}
+
+sd_rev_facet_plot <- function(summry) {
+  ggplot(summry, 
+       aes(x = InitNumCts, y = mean_rev, fill = InitNumCts)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rev-sd_rev, ymax=mean_rev+sd_rev), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Revocations",
+    title = "Revocations with standard dev"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+}
+
+sd_hb_plot <- function(summry, strat) {
+  ggplot(summry, 
+       aes(x = InitNumCts, y = mean_hb, fill = InitNumCts)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_hb-sd_hb, ymax=mean_hb+sd_hb), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Heartbeats",
+    title = "Heartbeats with standard dev",
+    subtitle = paste("Resources: 40, assignment strategy:", strat)
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+}
+
+sd_hb_facet_plot <- function(summry) {
+  ggplot(summry, 
+       aes(x = InitNumCts, y = mean_hb, fill = InitNumCts)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_hb-sd_hb, ymax=mean_hb+sd_hb), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Heartbeats",
+    title = "Heartbeats with standard dev"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+}
+
+pct_plot <- function(df, col, strat) {
+  ggplot(df, aes(x=InitNumCts)) + 
+  geom_line(aes(y=min_val, color="#E69F00")) +
+  geom_line(aes(y=percentile_50, color="#56B4E9")) +
+  geom_line(aes(y=percentile_75, color="#009E73")) +
+  geom_line(aes(y=percentile_90, color="#F0E442")) +
+  geom_line(aes(y=percentile_95, color="#0072B2")) +
+  geom_line(aes(y=percentile_99, color="#D55E00")) +
+  geom_line(aes(y=max_val, color="#CC79A7")) +
+  labs(title = paste(col, "with percentiles"),
+    subtitle = paste("Resources: 40, assignment strategy:", strat),
+       y=col) +  # title and caption
+  scale_color_identity(guide='legend',
+                       name='Percentiles',
+                       breaks=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"),
+                       labels=c('Min', 'p50', 'p75', 'p90', 'p95', 'p99', 'Max')) +
+  theme_bw()
+}
+```
+
+# Kafka Resource Rebalancing Protocol
+
+Analysis of different assignment strategies for a group of 40 resources with a range the client counts. 
+
+The following strategies are analyzed:
+
+- Range assignment
+- Round-robin assignment
+- Sticky assignment
+
+Additionally, sticky assignment has two sub-variants where the algorithm tolerates a configurable amount of unfairness in return for less resource revocations.
+
+We look at various metrics under the scenario of a single member restarting which causes the rebalancing protocol to kick in. These metrics are measured until the group reaches its new target assignment of resources. The following metrics are analyzed:
+
+- number of resource revocations
+- number of heartbeats sent by all clients
+- the number of heartbeat rounds (each client sends a heartbeat on an interval)
+
+## Range assignment strategy
+
+Summary of revocations, heartbeats and heartbeat rounds with the number of clients as a dimension.
+```{r}
+stratSummary(rangeGrouped)
+```
+Revocations as a function of client count with 40 resources with error bar of standard deviation.
+
+```{r}
+sd_rev_plot(stratSummary(rangeGrouped), "Range")
+```
+
+We can also show a more detailed percentiles view.
+
+```{r}
+pct_plot(range_rev_pct_df, "Revocations", "Range")
+```
+
+Heartbeats.
+
+```{r}
+sd_hb_plot(stratSummary(rangeGrouped), "Range")
+```
+
+## Round-robin assignment strategy
+
+Summary of revocations, heartbeats and heartbeat rounds with the number of clients as a dimension.
+```{r}
+stratSummary(rrGrouped)
+```
+Revocations as a function of client count with 40 resources with error bar of standard deviation.
+
+```{r}
+sd_rev_plot(stratSummary(rrGrouped), "Round-robin")
+```
+
+We can also show a more detailed percentiles view.
+
+```{r}
+pct_plot(rr_rev_pct_df, "Revocations", "Round-robin")
+```
+
+Heartbeats.
+
+```{r}
+sd_hb_plot(stratSummary(rrGrouped), "Round-robin")
+```
+
+## Sticky assignment strategy
+
+Summary of revocations, heartbeats and heartbeat rounds with the number of clients as a dimension.
+```{r}
+stratSummary(stickySimpleGrouped1)
+```
+Revocations as a function of client count with 40 resources with error bar of standard deviation.
+
+```{r}
+sd_rev_plot(stratSummary(stickySimpleGrouped1), "Sticky")
+```
+
+We can also show a more detailed percentiles view.
+
+```{r}
+pct_plot(sticky_rev_pct_df, "Revocations", "Sticky")
+```
+
+Heartbeats.
+
+```{r}
+sd_hb_plot(stratSummary(stickySimpleGrouped1), "Sticky")
+```
+## Sticky assignment with unfairness tolerance
+
+```{r}
+sd_rev_plot(stratSummary(stickySimpleGrouped2), "Sticky")
+```
+
+```{r}
+sd_rev_plot(stratSummary(stickyDistanceGrouped2), "Sticky")
+```
+
+# Differential
+
+Revocations across strategies.
+
+```{r}
+sd_rev_facet_plot(stratSummary(allGrouped)) +
+  facet_wrap(~ Strategy, nrow=3)
+```
+
+Heartbeats across strategies.
+
+```{r}
+sd_hb_facet_plot(stratSummary(allGrouped)) +
+  facet_wrap(~ Strategy, nrow=3)
+```
+
+Sticky simple with varying tolerance for max difference of assignments.
+```{r}
+sd_rev_facet_plot(stratSummary(stickySimpleGroupedAll)) +
+  facet_wrap(~ StrategyParam)
+```
+
+Sticky distance with varying tolerance for distance from fair assignment.
+```{r}
+sd_rev_facet_plot(stratSummary(stickyDistanceGroupedAll))  +
+  facet_wrap(~ StrategyParam)
+```
