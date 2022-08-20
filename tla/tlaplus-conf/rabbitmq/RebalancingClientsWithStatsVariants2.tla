@@ -1,4 +1,4 @@
-------------------- MODULE RebalancingClientsWithStats -------------------
+------------------- MODULE RebalancingClientsWithStatsVariants2 -------------------
 EXTENDS Sequences, Integers, Functions, FiniteSets, FiniteSetsExt, Naturals, TLC, TLCExt, CSV, IOUtils
 
 \* Q=40,A=2..60
@@ -13,32 +13,34 @@ ASSUME FixedCount \in Nat
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"Traces,Length,Queue,PerQueueReleases,QueueCount,AppCount\" > " \o CSVFile1>>
+        <<"bash", "-c", "echo \"Traces,Length,Queue,PerQueueReleases,Algorithm,QueueCount,AppCount\" > " \o CSVFile1>>
         ).exitValue = 0 \* Fail fast if CSVFile1 was not created.
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"Traces,Length,App,PerAppReleases,QueueCount,AppCount\" > " \o CSVFile2>>
+        <<"bash", "-c", "echo \"Traces,Length,App,PerAppReleases,Algorithm,QueueCount,AppCount\" > " \o CSVFile2>>
         ).exitValue = 0 \* Fail fast if CSVFile2 was not created.
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"Traces,Length,App,PerAppRounds,QueueCount,AppCount\" > " \o CSVFile3>>
+        <<"bash", "-c", "echo \"Traces,Length,App,PerAppRounds,Algorithm,QueueCount,AppCount\" > " \o CSVFile3>>
         ).exitValue = 0 \* Fail fast if CSVFile3 was not created.
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"Traces,Length,TotalReleases,QueueCount,AppCount\" > " \o CSVFile4>>
+        <<"bash", "-c", "echo \"Traces,Length,TotalReleases,Algorithm,QueueCount,AppCount\" > " \o CSVFile4>>
         ).exitValue = 0 \* Fail fast if CSVFile4 was not created.
 
-VARIABLES app,                \* the set of all applications of any given behaviour
+VARIABLES algorithm,
+          app,                \* the set of all applications of any given behaviour
           queue,              \* the set of all queues of any given behaviour
           subscriber_queue,   \* the First Subscribe, First Active ordering of each queue
           active,             \* the active consumer of each queue
           app_queues,         \* the set of queues each app has a consumer for
-          per_app_checks      \* number of rounds
+          per_app_checks,     \* number of rounds
+          aux_app_ctr
 
-vars == << app, queue, subscriber_queue, active, app_queues, per_app_checks >>
+vars == << algorithm, app, queue, subscriber_queue, active, app_queues, per_app_checks, aux_app_ctr >>
 
 \* the counter ids
 per_queue_releases_ctr(q) == 1000 + q
@@ -68,31 +70,44 @@ ResetCounters ==
     /\ \A q \in queue : TLCSet(per_queue_releases_ctr(q), 0)
     /\ TLCSet(total_releases_ctr, 0)
 
-Dimensions == {"app"} \*, "queue"}
+Position1Algorithm ==
+    algorithm \in { "pos1-activerelease", "pos1-nonactiverelease" }
 
-InitVars(apps, queues) ==
+ActiveReleaseAlgorithm ==
+    algorithm \in { "pos1-activerelease", "pos2-activerelease" }    
+
+Algorithms ==
+    { "pos1-activerelease",
+      "pos2-activerelease",
+      "pos1-nonactiverelease",
+      "pos2-nonactiverelease" }
+
+InitVars(apps, queues, algo) ==
+    /\ algorithm = algo
     /\ app = apps
     /\ queue = queues
     /\ subscriber_queue = [q \in queues |-> <<>>]
     /\ active = [q \in queues |-> 0]
     /\ app_queues = [a \in apps |-> {}]
     /\ per_app_checks = [a \in apps |-> 0]
+    /\ aux_app_ctr = 0
 
 InitFromZero ==
     \E max_count \in 2..(FixedCount + (FixedCount \div 2)) :
-        /\ \E dim \in Dimensions :
-            IF dim = "app"
-            THEN LET apps == 1..max_count
-                     queues == 1..FixedCount
-                 IN InitVars(apps, queues)
-            ELSE LET apps == 1..FixedCount
-                     queues == 1..max_count
-                 IN InitVars(apps, queues)
+        /\ \E algo \in Algorithms :
+            LET apps   == 1..max_count
+                queues == 1..FixedCount
+            IN InitVars(apps, queues, algo)
         /\ ResetCounters
 
 (***************************************************************************)
 (* State formulae                                                          *) 
 (***************************************************************************)
+
+\* True when every application has a consumer on every queue
+\* (either as the active consumer or in the queue's subscriber queue)
+AllAppsSubscribedOnAllQueues ==
+    \A a \in app : app_queues[a] = queue
 
 AppHasSubscriptions(a) ==
     app_queues[a] # {}
@@ -120,14 +135,39 @@ IsBalanced ==
 (***************************************************************************)
    
 \* Not currently used
-Stop(a) ==
+StopApp(a) ==
     \* enabling conditions
-    /\ AppHasSubscriptions(a)
+    /\ aux_app_ctr = 0
+    /\ AllAppsSubscribedOnAllQueues
+    /\ IsBalanced
     \* actions
-    /\ subscriber_queue' = [q \in queue |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
-    /\ active' = [q \in queue |-> IF active[q] = a THEN 0 ELSE active[q]] 
-    /\ app_queues' = [app_queues EXCEPT ![a] = {}]
-    /\ UNCHANGED << app, queue, per_app_checks >>
+    /\ LET apps == app \ {a}
+       IN
+            /\ app' = apps
+            /\ app_queues' = [a1 \in apps |-> app_queues[a1]]
+            /\ per_app_checks' = [a1 \in apps |-> per_app_checks[a1]]
+            /\ subscriber_queue' = [q \in queue |-> SelectSeq(subscriber_queue[q], LAMBDA a1: a1 # a)]
+            /\ active' = [q \in queue |-> IF active[q] = a THEN 0 ELSE active[q]] 
+            /\ aux_app_ctr' = aux_app_ctr + 1
+            /\ ResetCounters
+            /\ UNCHANGED << algorithm, queue >>
+
+\* Not currently used
+StartApp ==
+    \* enabling conditions
+    /\ aux_app_ctr = 0
+    /\ AllAppsSubscribedOnAllQueues
+    /\ IsBalanced
+    \* actions
+    /\ LET new_app == Max(app) + 1
+           apps == app \union {new_app}
+       IN
+            /\ app' = apps
+            /\ app_queues' = [a \in apps |-> IF a \in app THEN app_queues[a] ELSE {}]
+            /\ per_app_checks' = [a \in apps |-> IF a \in app THEN per_app_checks[a] ELSE 0]
+            /\ aux_app_ctr' = aux_app_ctr + 1
+            /\ ResetCounters
+            /\ UNCHANGED << algorithm, queue, subscriber_queue, active >>
 
 \* If an app is not subscribed to a queue, then subscribe
 \* This action is used when we want to verify with random subscribe ordering
@@ -137,45 +177,12 @@ SubscribeToOneQueue(a, q) ==
     \* actions
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = Append(@, a)]
     /\ app_queues' = [app_queues EXCEPT ![a] = @ \union {q}]
-    /\ UNCHANGED << app, queue, active, per_app_checks >>
+    /\ UNCHANGED << algorithm, app, queue, active, per_app_checks, aux_app_ctr >>
     /\ StdOut(<<"SubscribeToOneQueue", a, q>>)
 
 \* An app that is not subscribed on one or more queues, subscribes to all those queues it is missing
 \* This action is used when we want to verify with sequential subscribe ordering    
-SubscribeToOneQueueOrdered(a, q) ==
-    \* enabling conditions 
-    /\ ~\E a1 \in app : 
-        /\ \E q1 \in queue : q1 \notin app_queues[a1]
-        /\ a1 < a
-    /\ q \notin app_queues[a]
-    \* actions
-    /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = Append(@, a)]
-    /\ app_queues' = [app_queues EXCEPT ![a] = @ \union {q}]
-    /\ UNCHANGED << app, queue, active, per_app_checks >>
-    /\ StdOut(<<"SubscribeToOneQueueOrdered", a, q>>)
-
-RECURSIVE AppendMany(_,_)
-AppendMany(seq, set) ==
-    IF Cardinality(set) = 0
-    THEN seq
-    ELSE LET element == CHOOSE s \in set : TRUE
-             remaining == set \ {element}
-         IN AppendMany(Append(seq, element), remaining)
-
-SubscribeToAllQueuesNew ==
-    \* enabling conditions
-    /\ \E a \in app : app_queues[a] # queue
-    \* actions
-    /\ subscriber_queue' = [q \in queue |->
-                                IF \E a \in app : q \notin app_queues[a]
-                                THEN LET apps == {a \in app : q \notin app_queues[a]}
-                                     IN AppendMany(subscriber_queue[q], apps)
-                                ELSE subscriber_queue[q]]
-    /\ app_queues' = [a \in DOMAIN app_queues |-> queue]
-    /\ UNCHANGED << app, queue, active, per_app_checks >>
-    /\ StdOut(<<"SubscribeToAllQueuesNew">>)
-
-SubscribeToAllQueuesOld(a) ==
+SubscribeToAllQueues(a) ==
     \* enabling conditions
     /\ app_queues[a] # queue
     \* actions
@@ -185,12 +192,12 @@ SubscribeToAllQueuesOld(a) ==
                                 ELSE
                                     subscriber_queue[q]]
     /\ app_queues' = [app_queues EXCEPT ![a] = queue]
-    /\ UNCHANGED << app, queue, active, per_app_checks >>
+    /\ UNCHANGED << algorithm, app, queue, active, per_app_checks, aux_app_ctr >>
     /\ StdOut(<<"SubscribeToAllQueues", a>>)
 
 \* The position in the list of apps with active consumers, in reverse order, then by id
 \* Required in order for each app to deterministically make the same decision about when to release a queue
-Position(a) ==
+Position1(a) ==
     IF AppActiveCount(a) = 0 THEN -1
     ELSE
         Cardinality({ 
@@ -205,9 +212,6 @@ Position(a) ==
                           /\ a < a1
                 
         })
-
-\* SubscribedApplications ==
-\*     { a \in app : AppHasSubscriptions(a) }
 
 Position2(a) ==
     Quantify(app, LAMBDA a1 : 
@@ -232,7 +236,9 @@ IdealNumber(a) ==
         ELSE
             LET ideal == queue_count \div app_count
                 remainder ==  queue_count % app_count
-                position == Position2(a)
+                position == IF Position1Algorithm
+                            THEN Position1(a)
+                            ELSE Position2(a)
             IN
                 IF remainder = 0 THEN ideal
                 ELSE
@@ -240,31 +246,6 @@ IdealNumber(a) ==
                         ideal + 1
                     ELSE
                         ideal 
-
-IdealNumberVals(a) ==
-    LET queue_count == Cardinality(queue)
-        app_count == SubscribedAppCount
-    IN
-        IF app_count = 0 THEN 0
-        ELSE
-            LET ideal == queue_count \div app_count
-                remainder ==  queue_count % app_count
-                position == Position(a)
-                position2 == Position2(a)
-                num == IF remainder = 0 THEN ideal
-                       ELSE
-                            IF remainder >= position + 1 THEN
-                                ideal + 1
-                            ELSE
-                                ideal 
-            IN [app_count |-> app_count, 
-                queue_count |-> queue_count, 
-                final |-> num,
-                ideal |-> ideal, 
-                remainder |-> remainder, 
-                active_count |-> AppActiveCount(a),
-                position |-> position, 
-                position2 |-> position2]
 
 IncrementMetrics(a, queues, release_count) ==
     /\ \A q \in queues : TLCSet(per_queue_releases_ctr(q), TLCGet(per_queue_releases_ctr(q)) + 1)
@@ -310,7 +291,7 @@ CanPerformCheck(a) ==
         /\ app_queues[a1] = queue
     /\ \A q \in queue : active[q] # 0
         
-PerformStandardCheck(a) ==
+PerformActiveReleaseCheck(a) ==
     \* enabling conditions
     /\ CanPerformCheck(a)
     \* actions
@@ -322,11 +303,11 @@ PerformStandardCheck(a) ==
                ELSE 
                    /\ IncrementMetrics(a, {}, 0)
                    /\ UNCHANGED << app_queues, subscriber_queue, active >>
-            /\ StdOut(<<"PerformStandardCheck", a, release_count>>)
+            /\ StdOut(<<"PerformActiveReleaseCheck", a, release_count>>)
             /\ PrintQueueState
             \* /\ \A a1 \in app : 
             \*     PrintT(<<a, "Ideal", a1, IdealNumberVals(a1), AppActiveCount(a1)>>)
-    /\ UNCHANGED <<app, queue>>
+    /\ UNCHANGED <<algorithm, app, queue, aux_app_ctr>>
 
 PerformNonActiveReleaseCheck(a) ==
     \* enabling conditions
@@ -345,8 +326,12 @@ PerformNonActiveReleaseCheck(a) ==
                    /\ IncrementMetrics(a, {}, 0)
                    /\ StdOut(<<"PerformNonActiveReleaseCheck", a, "No releases">>)
                    /\ UNCHANGED << app_queues, subscriber_queue, active >>
-            /\ UNCHANGED << app, queue >>
-    
+            /\ UNCHANGED << algorithm, app, queue, aux_app_ctr >>
+
+PerformCheck(a) ==
+    IF ActiveReleaseAlgorithm
+    THEN PerformActiveReleaseCheck(a)
+    ELSE PerformNonActiveReleaseCheck(a)
 
 \* The SAC queue assigns active status to the next consumer in the subscriber queue
 MakeActive(a, q) ==
@@ -357,59 +342,44 @@ MakeActive(a, q) ==
     \* actions
     /\ active' = [active EXCEPT ![q] = a]
     /\ subscriber_queue' = [subscriber_queue EXCEPT ![q] = SelectSeq(@, LAMBDA a1: a1 # a)]
-    /\ UNCHANGED << app, queue, app_queues, per_app_checks >>
+    /\ UNCHANGED << algorithm, app, queue, app_queues, per_app_checks, aux_app_ctr >>
     /\ StdOut(<<"MakeActive", a, q>>)
 
-
-RandomStandardNext ==
-    \E a \in app : 
-        \/ PerformStandardCheck(a)
+RandomNextWithAddApp ==
+    \/ StartApp
+    \/ \E a \in app : 
+        \/ PerformCheck(a)
         \/ \E q \in queue :
             \/ SubscribeToOneQueue(a, q)
             \/ MakeActive(a, q)
 
-RandomNonActiveReleaseNext ==
+RandomNextWithStopApp ==
     \E a \in app : 
-        \/ PerformNonActiveReleaseCheck(a)
+        \/ StopApp(a)
+        \/ PerformCheck(a)
         \/ \E q \in queue :
             \/ SubscribeToOneQueue(a, q)
             \/ MakeActive(a, q)            
 
-
-SequentialStandardNext2 ==
-    \/ SubscribeToAllQueuesNew
+SequentialNextWithAddApp ==
+    \/ StartApp
     \/ \E a \in app :
-        \/ PerformStandardCheck(a)
-        \/ \E q \in queue : MakeActive(a, q)
-
-SequentialNonActiveReleaseNext ==
-    \/ SubscribeToAllQueuesNew
-    \/ \E a \in app :
-        \/ PerformNonActiveReleaseCheck(a)
-        \/ \E q \in queue : MakeActive(a, q)
-
-SequentialStandardNext ==
-    \E a \in app :
-        \/ PerformStandardCheck(a)
-        \/ SubscribeToAllQueuesOld(a)
+        \/ PerformCheck(a)
+        \/ SubscribeToAllQueues(a)
         \/ \E q \in queue :
            \/ MakeActive(a, q)
 
-SequentialNonActiveReleaseNext2 ==
+SequentialNextWithStopApp ==
     \E a \in app :
-        \/ PerformNonActiveReleaseCheck(a)
+        \/ StopApp(a)
+        \/ PerformCheck(a)
+        \/ SubscribeToAllQueues(a)
         \/ \E q \in queue :
-            \/ SubscribeToOneQueueOrdered(a, q)
-            \/ MakeActive(a, q)            
-        
+           \/ MakeActive(a, q)
+       
 (***************************************************************************)
 (* Invariants                                                              *)
 (***************************************************************************)
-
-\* True when every application has a consumer on every queue
-\* (either as the active consumer or in the queue's subscriber queue)
-AllAppsSubscribedOnAllQueues ==
-    \A a \in app : app_queues[a] = queue
 
 AppOrNone ==
     app \union { 0 }
@@ -420,50 +390,51 @@ TypeOK ==
     /\ app_queues \in [app -> SUBSET queue]
 
 StatsInv ==
-    (AllAppsSubscribedOnAllQueues /\ IsBalanced) =>
-            /\ PrintT(<<"Stats", "Traces", TLCGet("stats").traces, TLCGet("level"), 
-                        "AppCount", Cardinality(app),
-                        "QueueCount", Cardinality(queue)>>)
+    (AllAppsSubscribedOnAllQueues /\ IsBalanced /\ aux_app_ctr = 0) =>
+            /\ PrintT(<<"Stats", "Traces", TLCGet("stats").traces, TLCGet("level"),
+                        algorithm, Cardinality(app), Cardinality(queue)>>)
             /\ \A q \in queue :
-                CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s",
+                CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
                 <<TLCGet("stats").traces, TLCGet("level"), q, 
-                  TLCGet(per_queue_releases_ctr(q)),
+                  TLCGet(per_queue_releases_ctr(q)), algorithm,
                   Cardinality(queue), Cardinality(app)>>, CSVFile1)
             /\ \A a \in app :
-                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s",
+                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
                     <<TLCGet("stats").traces, TLCGet("level"), a, 
-                      TLCGet(per_app_releases_ctr(a)), 
+                      TLCGet(per_app_releases_ctr(a)), algorithm,
                       Cardinality(queue), Cardinality(app)>>, CSVFile2)
-                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s",
+                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
                     <<TLCGet("stats").traces, TLCGet("level"), a,
-                      per_app_checks[a], Cardinality(queue),
+                      per_app_checks[a], algorithm, Cardinality(queue),
                       Cardinality(app)>>, CSVFile3)
-            /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s",
+            /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s",
                 <<TLCGet("stats").traces, TLCGet("level"),
-                  TLCGet(total_releases_ctr), Cardinality(queue),
+                  TLCGet(total_releases_ctr), algorithm, Cardinality(queue),
                   Cardinality(app)>>, CSVFile4)
             /\ ResetCounters
 
 TestInv ==
-    
+    TRUE
     \* IF (~ ENABLED RandomStandardNext)
     \* THEN AllAppsSubscribedOnAllQueues /\ IsBalanced
     \* ELSE TRUE
 
-    IF TLCGet("level") > 1
-    THEN
-        /\ \A a \in app : 
-                PrintT(<<"Ideal", a, IdealNumberVals(a), AppActiveCount(a)>>)
-    ELSE TRUE
+    \* IF TLCGet("level") > 1
+    \* THEN
+    \*     /\ \A a \in app : 
+    \*             PrintT(<<"Ideal", a, IdealNumberVals(a), AppActiveCount(a)>>)
+    \* ELSE TRUE
 
 (***************************************************************************)
 (* Specs                                                                    *)
 (***************************************************************************)
 
-RandomStandardSpecFromZero == InitFromZero /\ [][RandomStandardNext]_vars /\ WF_vars(RandomStandardNext) 
-SequentialStandardSpecFromZero == InitFromZero /\ [][SequentialStandardNext]_vars /\ WF_vars(SequentialStandardNext)
-RandomNonActiveReleaseSpecFromZero == InitFromZero /\ [][RandomNonActiveReleaseNext]_vars /\ WF_vars(RandomNonActiveReleaseNext) 
-SequentialNonActiveReleaseSpecFromZero == InitFromZero /\ [][SequentialNonActiveReleaseNext]_vars /\ WF_vars(SequentialNonActiveReleaseNext)
+\* RandomSpecFromZero == InitFromZero /\ [][RandomNext]_vars /\ WF_vars(RandomNext) 
+\* SequentialSpecFromZero == InitFromZero /\ [][SequentialNext]_vars /\ WF_vars(SequentialNext)
+RandomSpecAdd == InitFromZero /\ [][RandomNextWithAddApp]_vars /\ WF_vars(RandomNextWithAddApp) 
+SequentialSpecAdd == InitFromZero /\ [][SequentialNextWithAddApp]_vars /\ WF_vars(SequentialNextWithAddApp)
+RandomSpecStop == InitFromZero /\ [][RandomNextWithStopApp]_vars /\ WF_vars(RandomNextWithStopApp) 
+SequentialSpecStop == InitFromZero /\ [][SequentialNextWithStopApp]_vars /\ WF_vars(SequentialNextWithStopApp)
 
 =============================================================================
 \* Modification History

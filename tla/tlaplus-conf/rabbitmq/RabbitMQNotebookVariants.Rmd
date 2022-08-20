@@ -1,0 +1,189 @@
+---
+title: "RabbitMQ Cooperative Balancing"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+
+# title <- "Sequential start of all clients"
+# suffix <- "Seq20Variants"
+
+# title <- "Concurrent start of all clients"
+# suffix <- "Random20Variants"
+
+title <- "Add one client"
+suffix <- "Random20VariantsAdd"
+
+# title <- "Sequential start of all clients - Optimized"
+# suffix <- "SeqOpt20"
+
+# title <- "Concurrent start of all clients - Optimized"
+# suffix <- "RandomOpt20"
+
+title <- as_tibble(title)
+raw_total_rel_df <- read.csv(file = paste("results/raw/TotalReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+raw_per_app_rel_df <- read.csv(file = paste("results/raw/PerAppReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+raw_per_app_rounds_df <- read.csv(file = paste("results/raw/PerAppRounds", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+raw_per_queue_rel_df <- read.csv(file = paste("results/raw/PerQueueReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+
+pct_total_rel_df <- read.csv(file = paste("results/aggregated/agg_TotalReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+pct_per_app_rel_df <- read.csv(file = paste("results/aggregated/agg_PerAppReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+pct_per_app_round_df <- read.csv(file = paste("results/aggregated/agg_PerAppRounds", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+pct_per_queue_rel_df <- read.csv(file = paste("results/aggregated/agg_PerQueueReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+
+
+raw_total_rel_df_q20 <- dplyr::filter(raw_total_rel_df, QueueCount==20)
+raw_per_app_rel_df_q20 <- dplyr::filter(raw_per_app_rel_df, QueueCount==20)
+raw_per_app_rounds_df_q20 <- dplyr::filter(raw_per_app_rounds_df, QueueCount==20)
+raw_per_queue_rel_df_q20 <- dplyr::filter(raw_per_queue_rel_df, QueueCount==20)
+raw_total_rel_df_q20_grouped <- group_by(raw_total_rel_df_q20,Algorithm,AppCount)
+raw_per_app_rel_df_q20_grouped <- group_by(raw_per_app_rel_df_q20,Algorithm,AppCount)
+raw_per_app_rounds_df_q20_grouped <- group_by(raw_per_app_rounds_df_q20,Algorithm,AppCount)
+raw_per_queue_rel_df_q20_grouped <- group_by(raw_per_queue_rel_df_q20,Algorithm,AppCount)
+
+pct_total_rel_df_q20 <- dplyr::filter(pct_total_rel_df, QueueCount==20)
+pct_per_app_rel_df_q20 <- dplyr::filter(pct_per_app_rel_df, QueueCount==20)
+pct_per_app_round_df_q20 <- dplyr::filter(pct_per_app_round_df, QueueCount==20)
+pct_per_queue_rel_df_q20 <- dplyr::filter(pct_per_queue_rel_df, QueueCount==20)
+
+total_rel_summary <- summarise(raw_total_rel_df_q20_grouped,
+                     mean_rel = mean(TotalReleases),
+                     var_rel = var(TotalReleases),
+                     sd_rel = sd(TotalReleases))
+
+per_app_rel_summary <- summarise(raw_per_app_rel_df_q20_grouped,
+                         mean_rel = mean(PerAppReleases),
+                         var_rel = var(PerAppReleases),
+                         sd_rel = sd(PerAppReleases))
+
+per_app_round_summary <- summarise(raw_per_app_rounds_df_q20_grouped,
+                           mean_rel = mean(PerAppRounds),
+                           var_rel = var(PerAppRounds),
+                           sd_rel = sd(PerAppRounds))
+
+per_queue_rel_summary <- summarise(raw_per_queue_rel_df_q20_grouped,
+                           mean_rel = mean(PerQueueReleases),
+                           var_rel = var(PerQueueReleases),
+                           sd_rel = sd(PerQueueReleases))
+
+sd_rel_plot <- function(summry, what) {
+  ggplot(summry, 
+       aes(x = AppCount, y = mean_rel, fill = AppCount)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rel-sd_rel, ymax=mean_rel+sd_rel), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Queue releases",
+    title = paste(what, "with standard dev"),
+    subtitle = "Queues: 20"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+}
+
+pct_plot <- function(df, what) {
+  ggplot(df, aes(x=AppCount)) + 
+  geom_line(aes(y=min_val, color="#E69F00")) +
+  geom_line(aes(y=percentile_50, color="#56B4E9")) +
+  geom_line(aes(y=percentile_75, color="#009E73")) +
+  geom_line(aes(y=percentile_90, color="#F0E442")) +
+  geom_line(aes(y=percentile_95, color="#0072B2")) +
+  geom_line(aes(y=percentile_99, color="#D55E00")) +
+  geom_line(aes(y=max_val, color="#CC79A7")) +
+  labs(title = paste(what, "with percentiles"),
+    subtitle = "Queues: 20",
+       y=what) +  # title and caption
+  scale_color_identity(guide='legend',
+                       name='Percentiles',
+                       breaks=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"),
+                       labels=c('Min', 'p50', 'p75', 'p90', 'p95', 'p99', 'Max')) +
+  theme_bw()
+}
+```
+
+# Scenario: `r title$value`.
+
+## Total number of queue released until balance reached
+
+```{r}
+sd_rel_plot(total_rel_summary, "Total queue releases") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_total_rel_df_q20, "Total queue releases") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+### The number of queue released per application
+
+```{r}
+sd_rel_plot(per_app_rel_summary, "Queues released per application") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_app_rel_df_q20, "Queues released per application") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+### The number of rounds per application
+
+```{r}
+sd_rel_plot(per_app_round_summary, "Rounds of rounds per application") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_app_round_df_q20, "Rounds of rounds per application") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+### The number of releases per queue
+
+```{r}
+sd_rel_plot(per_queue_rel_summary, "Number of releases per queue") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_queue_rel_df_q20, "Number of releases per queue") +
+  facet_wrap(~ Algorithm, nrow=2)
+```
+
+## Checking Distribution
+
+```{r}
+ggplot(pct_total_rel_df, 
+       aes(x = AppCount, y = runs, fill = AppCount)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Simulations run",
+    title = "Number of simulations per application count") +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")  
+```
+
+```{r}
+ggplot(raw_total_rel_df_q20, 
+       aes(AppCount)) +   
+  geom_histogram(aes(fill=Algorithm),
+                  bins=29,
+                  col="black",
+                  size=.1) +   # change number of bins
+ labs(title="Number of simulations per application count and algorithm")
+```
