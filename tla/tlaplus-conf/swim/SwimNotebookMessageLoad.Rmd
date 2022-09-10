@@ -1,0 +1,130 @@
+---
+title: "SWIM - Detecting dead members"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(ggthemes)
+library(reshape)
+library(reshape2)
+
+title <- "Charts of the the SWIM paper"
+title <- as_tibble(title)
+
+raw_member_msg_load_df <- read.csv(file = "results/raw/member_msg_load_stats_force40.csv", sep=",")
+msg_load_all_df <- select(raw_member_msg_load_df, NumMembers, RunRand, Run, Round, Member, 
+                           AllMessages,IncomingMessages,OutgoingMessages)
+
+grouped <- group_by(msg_load_all_df, NumMembers)
+summry_grouped <- summarise(grouped, 
+                    mean_all_msgs = mean(AllMessages),
+                    sd_all_msgs = sd(AllMessages),
+                    mean_in_msgs = mean(IncomingMessages),
+                    sd_in_msgs = sd(IncomingMessages),
+                    mean_out_msgs = mean(OutgoingMessages),
+                    sd_out_msgs = sd(OutgoingMessages))
+melted <- melt(msg_load_all_df, id = c("NumMembers", "RunRand", "Run", "Round", "Member"),
+            variable.name = "MessageType")
+melted_grouped <- group_by(melted, NumMembers, MessageType)
+summry_melted <- summarise(melted_grouped, 
+                    mean = mean(value),
+                    sd = sd(value))
+
+raw_round_stats_df <- read.csv(file = "results/raw/round_stats_dead_dim_mem_5_40_many.csv", sep=",")
+first_detect_df <- select(filter(raw_round_stats_df, DeadMembersCount > 0),
+                                 NumMembers, RunRand, Run, Round)
+first_detect_grouped <- group_by(first_detect_df, NumMembers, RunRand, Run)
+first_detect_summry <- summarise(first_detect_grouped,
+                                 first_round = min(Round))
+first_detect_grouped2 <- group_by(first_detect_summry, NumMembers)
+first_detect_summry <- summarise(first_detect_grouped2,
+                                 mean_first_round = mean(first_round),
+                                 sd_first_round = sd(first_round))
+
+raw_msgload_stats_df2 <- read.csv(file = "results/raw/member_msg_load_stats_dead_dim_mem_5_40_few.csv", sep=",")
+first_detect_mem_df <- select(filter(raw_msgload_stats_df2, DeadStates > 0),
+                                 NumMembers, RunRand, Run, Round, Member)
+first_detect_mem_grouped <- group_by(first_detect_mem_df, NumMembers, RunRand, Run, Member)
+first_detect_mem_summry <- summarise(first_detect_mem_grouped,
+                                 first_round = min(Round))
+first_detect_mem_grouped2 <- group_by(first_detect_mem_summry, NumMembers)
+first_detect_mem_summry <- summarise(first_detect_mem_grouped2,
+                                 mean_first_round = mean(first_round),
+                                 sd_first_round = sd(first_round))
+
+```
+
+# Message load
+
+```{r}
+ggplot(summry_grouped, 
+       aes(x = NumMembers, y = mean_all_msgs, fill = NumMembers)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean_all_msgs-sd_all_msgs, ymax=mean_all_msgs+sd_all_msgs), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_continuous(low="orange", high="purple", name = "NumMembers") +
+  theme_minimal() +
+  labs(
+    x = "Group size",
+    y = "Message load",
+    title = "Message load per member per round",
+    subtitle = "As a function of group size"
+  )
+```
+
+```{r}
+in_out <- filter(summry_melted, MessageType %in% c("IncomingMessages", "OutgoingMessages"))
+ggplot(in_out, 
+       aes(x = NumMembers, y = mean, fill = MessageType)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_manual(values = c("IncomingMessages" = "purple", "OutgoingMessages" = "#A91079")) +
+  theme_minimal() +
+  labs(
+    x = "Group size",
+    y = "Message load in vs out",
+    title = "Message load (in and out) per member per round",
+    subtitle = "As a function of group size"
+  )
+```
+
+# Rounds to first detection of a dead member
+
+```{r}
+ggplot(first_detect_summry, 
+       aes(x = NumMembers, y = mean_first_round, fill = NumMembers)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean_first_round-sd_first_round, ymax=mean_first_round+sd_first_round), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_continuous(low="orange", high="purple", name = "Group size") +
+  theme_minimal() +
+  labs(
+    x = "Group size",
+    y = "Rounds",
+    title = "Rounds to first detection of dead member",
+    subtitle = "As a function of group size"
+  )
+```
+
+# Rounds to first detection - distribution across group
+
+```{r}
+ggplot(first_detect_mem_summry, 
+       aes(x = NumMembers, y = mean_first_round, fill = NumMembers)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean_first_round-sd_first_round, ymax=mean_first_round+sd_first_round), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_continuous(low="orange", high="purple", name = "Group size") +
+  theme_minimal() +
+  labs(
+    x = "Group size",
+    y = "Rounds",
+    title = "Rounds to infection across group",
+    subtitle = "As a function of group size"
+  )
+```

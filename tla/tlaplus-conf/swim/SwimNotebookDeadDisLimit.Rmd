@@ -1,0 +1,144 @@
+---
+title: "SWIM - Detecting dead members"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(ggthemes)
+library(reshape)
+library(reshape2)
+
+title <- "20 members, Dissemination Limit as a dimension"
+
+# title <- "Concurrent start of all clients"
+# suffix <- "Concurrent20"
+
+# title <- "Add one client"
+# suffix <- "Random20VariantsAdd"
+
+title <- as_tibble(title)
+raw_member_stats_df <- read.csv(file = "results/raw/member_stats_dead_20mem_dims_dl_dm.csv", sep=",", stringsAsFactors = TRUE)
+raw_round_stats_df <- read.csv(file = "results/raw/round_stats_dead_20mem_dims_dl_dm.csv", sep=",", stringsAsFactors = TRUE)
+raw_member_msg_load_df <- read.csv(file = "results/raw/member_stats_dead_20mem_dims_dl_dm.csv", sep=",")
+
+dis_limit_last_df <- select(filter(raw_round_stats_df, Round == MaxRound), 
+                       RunRand, Run, NumDead, DisseminationLimit, Round, MaxRound)
+dis_limit_all_df <- select(raw_round_stats_df, RunRand, Run, NumDead, DisseminationLimit, Round, 
+                           MaxRound, MessagesExchanged, UpdatesInRound, EffectiveUpdatesInRound)
+```
+
+# Detecting dead members : `r title$value`.
+
+## Rounds to convergence
+
+```{r}
+grouped <- group_by(dis_limit_last_df, NumDead, DisseminationLimit)
+summry <- summarise(grouped, 
+                    mean_rounds = mean(MaxRound),
+                    sd_rounds = sd(MaxRound))
+ggplot(summry, 
+       aes(x = DisseminationLimit, y = mean_rounds, fill = DisseminationLimit)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rounds-sd_rounds, ymax=mean_rounds+sd_rounds), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = "Mean rounds to convergence with standard deviation",
+    subtitle = "As a function of dissemination limit and number of dead to detect"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "DisseminationLimit") +
+  facet_grid(~ NumDead, labeller = label_both)
+```
+
+```{r}
+grouped <- group_by(dis_limit_last_df, NumDead, DisseminationLimit, MaxRound)
+ggplot(grouped, 
+       aes(x = DisseminationLimit, y = MaxRound,
+           group = DisseminationLimit)) +
+  geom_violin(adjust=4, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds",
+    title = "Rounds to convergence distribution.",
+    subtitle = "As a function of dissemination limit and number of dead to detect"
+  ) +
+  facet_wrap(~ NumDead, nrow=2, labeller = label_both)
+```
+
+## Messages exchanged
+
+```{r}
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+summry1 <- summarise(grouped_by_run, sum_msgs = sum(MessagesExchanged))
+grouped_by_cfg <- group_by(summry1, NumDead, DisseminationLimit)
+summry2 <- summarise(grouped_by_cfg, 
+                     mean_msgs = mean(sum_msgs),
+                     sd_msgs = sd(sum_msgs))
+
+ggplot(summry2, 
+       aes(x = DisseminationLimit, y = mean_msgs, fill = DisseminationLimit)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_msgs-sd_msgs, ymax=mean_msgs+sd_msgs), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Messages exchanged",
+    title = "Mean messages exchanged to reach convergence with standard deviation",
+    subtitle = "As a function of dissemination limit and number of dead to detect"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "DisseminationLimit") +
+  facet_grid(~ NumDead, labeller = label_both)
+```
+
+```{r}
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+summry1 <- summarise(grouped_by_run, sum_msgs = sum(MessagesExchanged))
+ggplot(summry1, 
+       aes(x = DisseminationLimit, y = sum_msgs,
+           group = DisseminationLimit)) +
+  geom_violin(adjust=4, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Messages Exchanged",
+    title = "Messages exchanged to reach convergence - distribution",
+    subtitle = "As a function of dissemination limit and number of dead to detect"
+  ) +
+  facet_wrap(~ NumDead, nrow=2, labeller = label_both)
+```
+## Gossiped updates vs effective updates
+
+```{r}
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+df1 <- summarise(grouped_by_run, 
+                     sum_updates = sum(UpdatesInRound),
+                     sum_eff_updates = sum(EffectiveUpdatesInRound))
+df2 <- melt(df1, id = c("NumDead","DisseminationLimit","RunRand","Run"),
+            variable.name = "UpdateType")
+df3 <- group_by(df2, NumDead, DisseminationLimit, UpdateType)
+df4 <- summarise(df3, 
+                     mean = mean(value),
+                     sd = sd(value))
+ggplot(df4, 
+       aes(x = DisseminationLimit, y = mean, fill = UpdateType)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean-sd, ymax=mean+sd), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Gossiped updates",
+    title = "All updates vs effective updates",
+    subtitle = "As a function of dissemination limit and number of dead to detect"
+  ) +
+  # scale_fill_continuous(low="orange", high="purple", name = "DisseminationLimit") +
+  facet_grid(~ NumDead, labeller = label_both)
+```

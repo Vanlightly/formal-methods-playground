@@ -1,0 +1,245 @@
+---
+title: "SWIM - Detecting dead members"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(ggthemes)
+
+title <- "20 members, Dissemination Limit as a dimension"
+suffix <- "20mem_dims_dl_dm"
+
+# title <- "Concurrent start of all clients"
+# suffix <- "Concurrent20"
+
+# title <- "Add one client"
+# suffix <- "Random20VariantsAdd"
+
+title <- as_tibble(title)
+raw_member_stats_df <- read.csv(file = paste("results/raw/member_stats_dead_", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+raw_round_stats_df <- read.csv(file = paste("results/raw/round_stats_dead_", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
+
+a <- select(raw_round_stats_df, RunRand, Run, NumDead, DisseminationLimit, Round, MaxRound)
+b <- filter(a, Round == MaxRound)
+c <- group_by(b, NumDead, DisseminationLimit, MaxRound)
+d <- summarise(c, n=n())
+
+
+raw_round_grouped_run_and_round <- group_by(raw_round_stats_df, 
+                                        RunRand, Run, Round,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+
+raw_round_grouped_run <- group_by(raw_round_grouped_run_and_round,
+                                        RunRand, Run,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+
+raw_round_grouped_max_round <- group_by(raw_round_grouped_run_and_round,
+                                        RunRand, Run, MaxRound,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+
+raw_round_grouped_run_max_round_summary <- summarise(raw_round_grouped_run_max_round,
+                                  freq = n())
+
+raw_round_grouped_cfg <- group_by(raw_round_grouped_run,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+
+round_by_cfg_summary <- summarise(raw_round_grouped_cfg,
+                                  mean_rounds = mean(MaxRound),
+                                  var_rounds = var(MaxRound),
+                                  sd_rounds = sd(MaxRound),
+                                  mean_msgs = mean(MessagesExchanged),
+                                  var_msgs = var(MessagesExchanged),
+                                  sd_msgs = sd(MessagesExchanged),
+                                  mean_updates = mean(UpdatesInRound),
+                                  var_updates = var(UpdatesInRound),
+                                  sd_updates = sd(UpdatesInRound),
+                                  mean_eff_updates = mean(EffectiveUpdatesInRound),
+                                  var_eff_updates = var(EffectiveUpdatesInRound),
+                                  sd_eff_updates = sd(EffectiveUpdatesInRound))
+
+round_by_run_summary <- summarise(raw_round_grouped_run,
+                                  max_rounds = max(MaxRound))
+
+members_by_round_summary <- summarise(raw_round_grouped_run_and_round,
+                     mean_msgs = mean(MessagesExchanged),
+                     var_msgs = var(MessagesExchanged),
+                     sd_msgs = sd(MessagesExchanged),
+                     mean_updates = mean(UpdatesInRound),
+                     var_updates = var(UpdatesInRound),
+                     sd_updates = sd(UpdatesInRound),
+                     mean_eff_updates = mean(EffectiveUpdatesInRound),
+                     var_eff_updates = var(EffectiveUpdatesInRound),
+                     sd_eff_updates = sd(EffectiveUpdatesInRound))
+
+sd_rounds_bar_plot <- function(what) {
+  ggplot(round_by_cfg_summary, 
+       aes(x = DisseminationLimit, y = mean_rounds, fill = DisseminationLimit)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rounds-sd_rounds, ymax=mean_rounds+sd_rounds), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20, dead: 1"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "DisseminationLimit")
+}
+
+sd_rounds_box_plot <- function(what) {
+  ggplot(raw_round_grouped_run, 
+       aes(x = DisseminationLimit, y = MaxRound, 
+           group = DisseminationLimit, fill = "blue")) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20"
+  )
+}
+
+sd_rounds_violin_plot <- function(what) {
+  ggplot(c, 
+       aes(x = DisseminationLimit, y = MaxRound,
+           group = DisseminationLimit)) +
+  geom_violin(adjust=1, bw="nrd") +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20"
+  )
+}
+
+sd_rounds_pct_plot <- function(what) {
+  ggplot(raw_round_grouped_run, 
+       aes(x = DisseminationLimit, y = MaxRound, fill = DisseminationLimit)) +
+  geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=0)) +
+  geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=0.5)) +
+  geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=0.75)) +  
+  geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=0.95)) +  
+  geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=0.99)) +
+    geom_line(aes(x=DisseminationLimit), y= quantile(df[,"y"], prob=1.0)) +
+  labs(title = paste(what, "with percentiles"),
+    subtitle = "Queues: 20",
+       y=what) +  # title and caption
+  scale_color_identity(guide='legend',
+                       name='Percentiles',
+                       breaks=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"),
+                       labels=c('Min', 'p50', 'p75', 'p90', 'p95', 'p99', 'Max')) +
+  theme_bw()
+}
+
+raw_member_stats_df_grouped_run_and_member <- group_by(raw_member_stats_df, 
+                                        Traces, RunRand, Run, Member,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+raw_member_stats_df_grouped_run <- group_by(raw_member_stats_df_grouped_run_and_member,
+                                        Traces, RunRand, Run,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+raw_member_stats_df_grouped_cfg <- group_by(raw_member_stats_df_grouped_run,
+                                        NumMembers, NumDead, 
+                                        NumNew, SuspectTimeout, DisseminationLimit,
+                                        MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
+                                        InitialContacts)
+
+members_recv_msgs_summary <- summarise(raw_member_stats_df_grouped_cfg,
+                     mean_recv_msg = mean(ReceivedMessages),
+                     var_recv_msg = var(ReceivedMessages),
+                     sd_recv_msg = sd(ReceivedMessages))
+
+sd_recv_msg_plot <- function(summry, what) {
+  ggplot(summry, 
+       aes(x = DisseminationLimit, y = mean_recv_msg, fill = DisseminationLimit)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_recv_msg-sd_recv_msg, ymax=mean_recv_msg+sd_recv_msg), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Messages received per member",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20"
+  ) +
+  scale_fill_continuous(low="orange", high="purple", name = "Member Count")
+}
+```
+
+# Scenario: `r title$value`.
+
+## Rounds to convergence - detecting dead members
+
+```{r}
+sd_rounds_bar_plot("Rounds to reach convergence") +
+  facet_wrap(~ NumDead, nrow=2)
+```
+
+```{r}
+sd_rounds_box_plot("Rounds to reach convergence") +
+  facet_wrap(~ NumDead, nrow=2)
+```
+```{r}
+sd_rounds_violin_plot2 <- function(what) {
+  ggplot(c, 
+       aes(x = DisseminationLimit, y = MaxRound,
+           group = DisseminationLimit)) +
+  geom_violin(adjust=4, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20"
+  )
+}
+
+sd_rounds_violin_plot3 <- function(what) {
+  ggplot(c, 
+       aes(x = DisseminationLimit, y = MaxRound,
+           group = DisseminationLimit)) +
+  geom_violin(adjust=1, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Dissemintation Limit",
+    y = "Rounds to achieve convergence",
+    title = paste(what, "with standard dev"),
+    subtitle = "Members: 20"
+  )
+}
+
+sd_rounds_violin_plot2("Rounds to reach convergence") +
+  facet_wrap(~ NumDead, nrow=2)
+
+sd_rounds_violin_plot3("Rounds to reach convergence") +
+  facet_wrap(~ NumDead, nrow=2)
+```
+<!-- ## Messages received per member -->
+
+<!-- ```{r} -->
+<!-- sd_recv_msg_plot(members_recv_msgs_summary, "Messages received per member") -->
+<!-- ``` -->

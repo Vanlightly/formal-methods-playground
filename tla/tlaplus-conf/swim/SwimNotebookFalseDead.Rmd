@@ -1,0 +1,87 @@
+---
+title: "SWIM - False positive rates of death detection"
+output: html_notebook
+---
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(ggthemes)
+library(cowplot)
+library(reshape)
+library(reshape2)
+
+title <- "Propagation of false dead states"
+title <- as_tibble(title)
+
+st_df <- read.csv(file = "results/raw/round_stats_falsedead_mem20_dim_st.csv", sep=",")
+all_st_df <- select(st_df, SuspectTimeout, RunRand, Run, Round,  
+                           AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,
+                          SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity)
+
+pg_df <- read.csv(file = "results/raw/round_stats_falsedead_mem20_dim_pg.csv", sep=",")
+all_pg_df <- select(pg_df, PeerGroupSize, RunRand, Run, Round,  
+                           AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,
+                          SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity)
+```
+
+# False dead state propagation with 10% message loss
+
+```{r}
+grouped <- group_by(all_st_df, SuspectTimeout, Round)
+summry_grouped <- summarise(grouped, 
+                    mean_ds = mean(DeadStatesCount),
+                    sd_ds = sd(DeadStatesCount))
+ggplot(summry_grouped, 
+       aes(x = Round, y = mean_ds, fill = Round)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean_ds-sd_ds, ymax=mean_ds+sd_ds), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_continuous(low="orange", high="purple", name = "Round") +
+  theme_minimal() +
+  labs(
+    x = "Round",
+    y = "False dead states",
+    title = "Propagation of false dead states over rounds",
+    subtitle = "As a function of suspect timeout"
+  ) + 
+  facet_wrap(~ SuspectTimeout, nrow=2, labeller = label_both)
+```
+
+```{r}
+grouped <- group_by(all_pg_df, PeerGroupSize, Round)
+summry_grouped <- summarise(grouped, 
+                    mean_ds = mean(DeadStatesCount),
+                    sd_ds = sd(DeadStatesCount))
+ggplot(summry_grouped, 
+       aes(x = Round, y = mean_ds, fill = Round)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=mean_ds-sd_ds, ymax=mean_ds+sd_ds), width=.2,
+                position=position_dodge(.9)) +
+  scale_fill_continuous(low="orange", high="purple", name = "Round") +
+  theme_minimal() +
+  labs(
+    x = "Round",
+    y = "False dead states",
+    title = "Propagation of false dead states over rounds",
+    subtitle = "As a function of peer group size"
+  ) + 
+  facet_wrap(~ PeerGroupSize, nrow=2, labeller = label_both)
+```
+
+```{r}
+p1 <- ggplot(all_pg_df, aes(Round, fill=as.factor(PeerGroupSize))) +   
+  geom_histogram(bins=41,
+                  col="black",
+                  size=.1) +   # change number of bins
+ labs(title="Behaviours per round and PG") +
+ guides(fill=guide_legend(title="PG"))
+p2 <- ggplot(all_st_df, aes(Round, fill=as.factor(SuspectTimeout))) +   
+  geom_histogram(bins=41,
+                  col="black",
+                  size=.1) +   # change number of bins
+ labs(title="Behaviours per round and ST") +
+ guides(fill=guide_legend(title="ST"))
+plot_grid(p1, p2)
+```
