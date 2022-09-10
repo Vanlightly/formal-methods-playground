@@ -5,4 +5,4 @@ WORKERS=$2
 
 # ensure there is a script called tlc that will run tlc
 
-tlc -generate RebalancingClientsWithStatsVariants.tla -config $CONFIG -deadlock -workers $WORKERS -depth 10000
+tlc-nightly -generate RebalancingClientsWithStatsVariants.tla -config $CONFIG -deadlock -workers $WORKERS -depth 10000

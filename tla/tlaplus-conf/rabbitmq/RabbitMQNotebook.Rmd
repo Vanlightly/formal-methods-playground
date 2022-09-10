@@ -8,12 +8,14 @@ options(scipen=999)
 library(ggplot2)
 library(dplyr)
 library(tibble)
+library(ggthemes)
+library(cowplot)
 
-title <- "Sequential start of all clients"
-suffix <- "Seq20_3"
+# title <- "Sequential start of all clients"
+# suffix <- "Seq20_3"
 
-# title <- "Concurrent start of all clients"
-# suffix <- "Random20"
+title <- "Concurrent start of all clients"
+suffix <- "Random20_4"
 
 # title <- "Sequential start of all clients - Optimized"
 # suffix <- "SeqOpt20"
@@ -66,7 +68,7 @@ per_queue_rel_summary <- summarise(raw_per_queue_rel_df_q20_grouped,
                            var_rel = var(PerQueueReleases),
                            sd_rel = sd(PerQueueReleases))
 
-sd_rel_plot <- function(summry, what) {
+sd_rel_plot <- function(summry, ylabel, what) {
   ggplot(summry, 
        aes(x = AppCount, y = mean_rel, fill = AppCount)) +
   geom_bar(stat = "identity") +
@@ -75,8 +77,8 @@ sd_rel_plot <- function(summry, what) {
   theme_minimal() +
   labs(
     x = "Number of clients",
-    y = "Queue releases",
-    title = paste(what, "with standard dev"),
+    y = ylabel,
+    title = paste(what, "with st dev"),
     subtitle = "Queues: 20"
   ) +
   scale_fill_continuous(low="orange", high="purple", name = "Client Count")
@@ -93,7 +95,8 @@ pct_plot <- function(df, what) {
   geom_line(aes(y=max_val, color="#CC79A7")) +
   labs(title = paste(what, "with percentiles"),
     subtitle = "Queues: 20",
-       y=what) +  # title and caption
+    y = what,
+    x = "Number of clients") +  # title and caption
   scale_color_identity(guide='legend',
                        name='Percentiles',
                        breaks=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"),
@@ -107,7 +110,7 @@ pct_plot <- function(df, what) {
 ## Total number of queue released until balance reached
 
 ```{r}
-sd_rel_plot(total_rel_summary, "Total queue releases")
+sd_rel_plot(total_rel_summary, "Queue releases", "Total queue releases")
 ```
 
 Percentiles view.
@@ -116,10 +119,16 @@ Percentiles view.
 pct_plot(pct_total_rel_df_q20, "Total queue releases")
 ```
 
+```{r}
+p1 <- sd_rel_plot(total_rel_summary, "Total queue releases", "Total queue releases")
+p2 <- pct_plot(pct_total_rel_df_q20, "Total queue releases")
+plot_grid(p1, p2)
+```
+
 ### The number of queue released per application
 
 ```{r}
-sd_rel_plot(per_app_rel_summary, "Queues released per application")
+sd_rel_plot(per_app_rel_summary, "Queue releases", "Queues released per application")
 ```
 
 Percentiles view.
@@ -131,7 +140,7 @@ pct_plot(pct_per_app_rel_df_q20, "Queues released per application")
 ### The number of rounds per application
 
 ```{r}
-sd_rel_plot(per_app_round_summary, "Rounds of releases per application")
+sd_rel_plot(per_app_round_summary, "Rounds", "Rounds of releases per application")
 ```
 
 Percentiles view.
@@ -143,7 +152,7 @@ pct_plot(pct_per_app_round_df_q20, "Rounds of releases per application")
 ### The number of releases per queue
 
 ```{r}
-sd_rel_plot(per_queue_rel_summary, "Number of releases per queue")
+sd_rel_plot(per_queue_rel_summary, "Queue releases", "Number of releases per queue")
 ```
 
 Percentiles view.

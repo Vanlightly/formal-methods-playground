@@ -1,0 +1,164 @@
+---
+title: "RabbitMQ Cooperative Balancing"
+output: html_notebook
+---
+
+```{r include=FALSE}
+options(scipen=999)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(ggthemes)
+library(cowplot)
+
+
+title <- "Python simulation"
+raw_total_rel_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_total_rel.csv", sep=",")
+raw_per_app_rel_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_per_app_rel.csv", sep=",")
+raw_per_app_rounds_df <- read.csv(file ="/home/jack/PycharmProjects/BalancingQueues/1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_rounds.csv", sep=",")
+raw_per_queue_rel_df <- read.csv(file ="/home/jack/PycharmProjects/BalancingQueues/1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_per_queue_rel.csv", sep=",")
+
+pct_total_rel_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/agg_total_releases__1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_total_rel.csv")
+pct_per_app_rel_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/agg_releases__1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_per_app_rel.csv")
+pct_per_app_round_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/agg_round__1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_rounds.csv")
+pct_per_queue_rel_df <- read.csv(file = "/home/jack/PycharmProjects/BalancingQueues/agg_releases__1662806519.7579577_rrTrue_roptFalse_q20-20_ar1.5_per_queue_rel.csv")
+
+raw_total_rel_df_q20 <- dplyr::filter(raw_total_rel_df, queue_count==20)
+raw_per_app_rel_df_q20 <- dplyr::filter(raw_per_app_rel_df, queue_count==20)
+raw_per_app_rounds_df_q20 <- dplyr::filter(raw_per_app_rounds_df, queue_count==20)
+raw_per_queue_rel_df_q20 <- dplyr::filter(raw_per_queue_rel_df, queue_count==20)
+raw_total_rel_df_q20_grouped <- group_by(raw_total_rel_df_q20,app_count)
+raw_per_app_rel_df_q20_grouped <- group_by(raw_per_app_rel_df_q20,app_count)
+raw_per_app_rounds_df_q20_grouped <- group_by(raw_per_app_rounds_df_q20,app_count)
+raw_per_queue_rel_df_q20_grouped <- group_by(raw_per_queue_rel_df_q20,app_count)
+
+pct_total_rel_df_q20 <- dplyr::filter(pct_total_rel_df, queue_count==20)
+pct_per_app_rel_df_q20 <- dplyr::filter(pct_per_app_rel_df, queue_count==20)
+pct_per_app_round_df_q20 <- dplyr::filter(pct_per_app_round_df, queue_count==20)
+pct_per_queue_rel_df_q20 <- dplyr::filter(pct_per_queue_rel_df, queue_count==20)
+
+total_rel_summary <- summarise(raw_total_rel_df_q20_grouped,
+                     mean_rel = mean(total_releases),
+                     var_rel = var(total_releases),
+                     sd_rel = sd(total_releases))
+
+per_app_rel_summary <- summarise(raw_per_app_rel_df_q20_grouped,
+                         mean_rel = mean(releases),
+                         var_rel = var(releases),
+                         sd_rel = sd(releases))
+
+per_app_round_summary <- summarise(raw_per_app_rounds_df_q20_grouped,
+                           mean_rel = mean(round),
+                           var_rel = var(round),
+                           sd_rel = sd(round))
+
+per_queue_rel_summary <- summarise(raw_per_queue_rel_df_q20_grouped,
+                           mean_rel = mean(releases),
+                           var_rel = var(releases),
+                           sd_rel = sd(releases))
+
+sd_rel_plot <- function(summry, ylabel, what) {
+  ggplot(summry, 
+       aes(x = app_count, y = mean_rel, fill = app_count)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin=mean_rel-sd_rel, ymax=mean_rel+sd_rel), width=.2,
+                position=position_dodge(.9)) +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = ylabel,
+    title = paste(what, "with st dev"),
+    subtitle = "Queues: 20"
+  ) +
+  scale_fill_continuous(low="#FFD662FF", high="#00539CFF", name = "Client Count")
+}
+
+pct_plot <- function(df, what) {
+  ggplot(df, aes(x=app_count)) + 
+  geom_line(aes(y=min_val, color="#E69F00")) +
+  geom_line(aes(y=percentile_50, color="#56B4E9")) +
+  geom_line(aes(y=percentile_75, color="#009E73")) +
+  # geom_line(aes(y=percentile_90, color="#F0E442")) +
+  geom_line(aes(y=percentile_95, color="#0072B2")) +
+  geom_line(aes(y=percentile_99, color="#D55E00")) +
+  geom_line(aes(y=max_val, color="#CC79A7")) +
+  labs(title = paste(what, "with percentiles"),
+    subtitle = "Queues: 20",
+    y = what,
+    x = "Number of clients") +  # title and caption
+  scale_color_identity(guide='legend',
+                       name='Percentiles',
+                       breaks=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7"),
+                       labels=c('Min', 'p50', 'p75', 'p90', 'p95', 'p99', 'Max')) +
+  theme_bw() +
+    lims(y=c(0,200))
+}
+```
+
+# Scenario
+
+## Total number of queue released until balance reached
+
+```{r}
+sd_rel_plot(total_rel_summary, "Queue releases", "Total queue releases")
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_total_rel_df_q20, "Total queue releases")
+```
+
+```{r}
+p1 <- sd_rel_plot(total_rel_summary, "Total queue releases", "Total queue releases")
+p2 <- pct_plot(pct_total_rel_df_q20, "Total queue releases")
+plot_grid(p1, p2)
+```
+
+### The number of queue released per application
+
+```{r}
+sd_rel_plot(per_app_rel_summary, "Queue releases", "Queues released per application")
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_app_rel_df_q20, "Queues released per application")
+```
+
+### The number of rounds per application
+
+```{r}
+sd_rel_plot(per_app_round_summary, "Rounds", "Rounds of releases per application")
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_app_round_df_q20, "Rounds of releases per application")
+```
+
+### The number of releases per queue
+
+```{r}
+sd_rel_plot(per_queue_rel_summary, "Queue releases", "Number of releases per queue")
+```
+
+Percentiles view.
+
+```{r}
+pct_plot(pct_per_queue_rel_df_q20, "Number of releases per queue")
+```
+
+```{r}
+ggplot(pct_total_rel_df_q20, 
+       aes(x = app_count, y = runs, fill = app_count)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Behaviours",
+    title = "Behaviours per client count") +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")
+```

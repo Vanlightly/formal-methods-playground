@@ -460,8 +460,8 @@ TestInv ==
 (* Specs                                                                    *)
 (***************************************************************************)
 
-RandomStandardSpecFromZero == InitFromZero /\ [][RandomStandardNext]_vars /\ WF_vars(RandomStandardNext) 
-SequentialStandardSpecFromZero == InitFromZero /\ [][SequentialStandardNext]_vars /\ WF_vars(SequentialStandardNext)
+RandomSpecFromZero == InitFromZero /\ [][RandomStandardNext]_vars /\ WF_vars(RandomStandardNext) 
+SequentialSpecFromZero == InitFromZero /\ [][SequentialStandardNext]_vars /\ WF_vars(SequentialStandardNext)
 RandomNonActiveReleaseSpecFromZero == InitFromZero /\ [][RandomNonActiveReleaseNext]_vars /\ WF_vars(RandomNonActiveReleaseNext) 
 SequentialNonActiveReleaseSpecFromZero == InitFromZero /\ [][SequentialNonActiveReleaseNext]_vars /\ WF_vars(SequentialNonActiveReleaseNext)
 

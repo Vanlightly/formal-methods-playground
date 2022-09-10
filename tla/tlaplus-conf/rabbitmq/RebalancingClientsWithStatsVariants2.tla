@@ -395,20 +395,20 @@ StatsInv ==
                         algorithm, Cardinality(app), Cardinality(queue)>>)
             /\ \A q \in queue :
                 CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
-                <<TLCGet("stats").traces, TLCGet("level"), q, 
+                <<TLCGet("stats").behavior.id, TLCGet("level"), q, 
                   TLCGet(per_queue_releases_ctr(q)), algorithm,
                   Cardinality(queue), Cardinality(app)>>, CSVFile1)
             /\ \A a \in app :
                 /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
-                    <<TLCGet("stats").traces, TLCGet("level"), a, 
+                    <<TLCGet("stats").behavior.id, TLCGet("level"), a, 
                       TLCGet(per_app_releases_ctr(a)), algorithm,
                       Cardinality(queue), Cardinality(app)>>, CSVFile2)
                 /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s",
-                    <<TLCGet("stats").traces, TLCGet("level"), a,
+                    <<TLCGet("stats").behavior.id, TLCGet("level"), a,
                       per_app_checks[a], algorithm, Cardinality(queue),
                       Cardinality(app)>>, CSVFile3)
             /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s",
-                <<TLCGet("stats").traces, TLCGet("level"),
+                <<TLCGet("stats").behavior.id, TLCGet("level"),
                   TLCGet(total_releases_ctr), algorithm, Cardinality(queue),
                   Cardinality(app)>>, CSVFile4)
             /\ ResetCounters

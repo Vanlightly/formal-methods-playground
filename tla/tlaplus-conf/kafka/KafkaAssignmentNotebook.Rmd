@@ -270,11 +270,11 @@ sd_hb_facet_plot(stratSummary(allGrouped)) +
 Sticky simple with varying tolerance for max difference of assignments.
 ```{r}
 sd_rev_facet_plot(stratSummary(stickySimpleGroupedAll)) +
-  facet_wrap(~ StrategyParam)
+  facet_wrap(~ StrategyParam, labeller = label_both)
 ```
 
 Sticky distance with varying tolerance for distance from fair assignment.
 ```{r}
 sd_rev_facet_plot(stratSummary(stickyDistanceGroupedAll))  +
-  facet_wrap(~ StrategyParam)
+  facet_wrap(~ StrategyParam, labeller = label_both)
 ```

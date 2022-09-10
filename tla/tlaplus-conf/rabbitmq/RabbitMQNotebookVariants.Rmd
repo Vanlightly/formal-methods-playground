@@ -9,14 +9,14 @@ library(ggplot2)
 library(dplyr)
 library(tibble)
 
-title <- "Sequential start of all clients"
-suffix <- "Sequential20"
+# title <- "Sequential start of all clients"
+# suffix <- "Seq20Variants"
 
 # title <- "Concurrent start of all clients"
-# suffix <- "Concurrent20"
+# suffix <- "Random20Variants"
 
-# title <- "Add one client"
-# suffix <- "Random20VariantsAdd"
+title <- "Add one client"
+suffix <- "Random20VariantsAdd"
 
 title <- as_tibble(title)
 raw_total_rel_df <- read.csv(file = paste("results/raw/TotalReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
@@ -180,4 +180,29 @@ ggplot(raw_total_rel_df_q20,
                   col="black",
                   size=.1) +   # change number of bins
  labs(title="Number of simulations per application count and algorithm")
+```
+
+```{r}
+p1 <- ggplot(pct_total_rel_df, 
+       aes(x = AppCount, y = runs, fill = AppCount)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Behaviours",
+    title = "Behaviours per client count") +
+  scale_fill_continuous(low="orange", high="purple", name = "Client Count")  
+
+p2 <- ggplot(raw_total_rel_df_q20, 
+       aes(AppCount)) +   
+  geom_histogram(aes(fill=Algorithm),
+                  bins=29,
+                  col="black",
+                  size=.1) +   # change number of bins
+ labs(title="Behaviours per client count and algorithm",
+      x = "Number of clients",
+    y = "Behaviours")
+  
+
+plot_grid(p1, p2, nrow=2)
 ```
