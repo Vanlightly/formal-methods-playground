@@ -23,28 +23,28 @@ title <- as_tibble(title)
 raw_member_stats_df <- read.csv(file = paste("results/raw/member_stats_dead_", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
 raw_round_stats_df <- read.csv(file = paste("results/raw/round_stats_dead_", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
 
-a <- select(raw_round_stats_df, RunRand, Run, NumDead, DisseminationLimit, Round, MaxRound)
+a <- select(raw_round_stats_df, Behaviour, NumDead, DisseminationLimit, Round, MaxRound)
 b <- filter(a, Round == MaxRound)
 c <- group_by(b, NumDead, DisseminationLimit, MaxRound)
 d <- summarise(c, n=n())
 
 
 raw_round_grouped_run_and_round <- group_by(raw_round_stats_df, 
-                                        RunRand, Run, Round,
+                                        Behaviour, Round,
                                         NumMembers, NumDead, 
                                         NumNew, SuspectTimeout, DisseminationLimit,
                                         MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
                                         InitialContacts)
 
 raw_round_grouped_run <- group_by(raw_round_grouped_run_and_round,
-                                        RunRand, Run,
+                                        Behaviour,
                                         NumMembers, NumDead, 
                                         NumNew, SuspectTimeout, DisseminationLimit,
                                         MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
                                         InitialContacts)
 
 raw_round_grouped_max_round <- group_by(raw_round_grouped_run_and_round,
-                                        RunRand, Run, MaxRound,
+                                        Behaviour, MaxRound,
                                         NumMembers, NumDead, 
                                         NumNew, SuspectTimeout, DisseminationLimit,
                                         MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
@@ -151,13 +151,13 @@ sd_rounds_pct_plot <- function(what) {
 }
 
 raw_member_stats_df_grouped_run_and_member <- group_by(raw_member_stats_df, 
-                                        Traces, RunRand, Run, Member,
+                                        Behaviour, Member,
                                         NumMembers, NumDead, 
                                         NumNew, SuspectTimeout, DisseminationLimit,
                                         MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,
                                         InitialContacts)
 raw_member_stats_df_grouped_run <- group_by(raw_member_stats_df_grouped_run_and_member,
-                                        Traces, RunRand, Run,
+                                        Behaviour,
                                         NumMembers, NumDead, 
                                         NumNew, SuspectTimeout, DisseminationLimit,
                                         MaxUpdatesPerPiggyBack, LoseEveryNth, PeerGroupSize,

@@ -16,12 +16,12 @@ title <- "Propagation of false dead states"
 title <- as_tibble(title)
 
 st_df <- read.csv(file = "results/raw/round_stats_falsedead_mem20_dim_st.csv", sep=",")
-all_st_df <- select(st_df, SuspectTimeout, RunRand, Run, Round,  
+all_st_df <- select(st_df, SuspectTimeout, Behaviour, Round,  
                            AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,
                           SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity)
 
 pg_df <- read.csv(file = "results/raw/round_stats_falsedead_mem20_dim_pg.csv", sep=",")
-all_pg_df <- select(pg_df, PeerGroupSize, RunRand, Run, Round,  
+all_pg_df <- select(pg_df, PeerGroupSize, Behaviour, Round,  
                            AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,
                           SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity)
 ```

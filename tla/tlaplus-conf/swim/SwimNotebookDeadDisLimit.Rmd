@@ -26,8 +26,8 @@ raw_round_stats_df <- read.csv(file = "results/raw/round_stats_dead_20mem_dims_d
 raw_member_msg_load_df <- read.csv(file = "results/raw/member_stats_dead_20mem_dims_dl_dm.csv", sep=",")
 
 dis_limit_last_df <- select(filter(raw_round_stats_df, Round == MaxRound), 
-                       RunRand, Run, NumDead, DisseminationLimit, Round, MaxRound)
-dis_limit_all_df <- select(raw_round_stats_df, RunRand, Run, NumDead, DisseminationLimit, Round, 
+                       Behaviour, NumDead, DisseminationLimit, Round, MaxRound)
+dis_limit_all_df <- select(raw_round_stats_df, Behaviour, NumDead, DisseminationLimit, Round, 
                            MaxRound, MessagesExchanged, UpdatesInRound, EffectiveUpdatesInRound)
 ```
 
@@ -75,7 +75,7 @@ ggplot(grouped,
 ## Messages exchanged
 
 ```{r}
-grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, Behaviour)
 summry1 <- summarise(grouped_by_run, sum_msgs = sum(MessagesExchanged))
 grouped_by_cfg <- group_by(summry1, NumDead, DisseminationLimit)
 summry2 <- summarise(grouped_by_cfg, 
@@ -99,7 +99,7 @@ ggplot(summry2,
 ```
 
 ```{r}
-grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, Behaviour)
 summry1 <- summarise(grouped_by_run, sum_msgs = sum(MessagesExchanged))
 ggplot(summry1, 
        aes(x = DisseminationLimit, y = sum_msgs,
@@ -117,11 +117,11 @@ ggplot(summry1,
 ## Gossiped updates vs effective updates
 
 ```{r}
-grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, RunRand, Run)
+grouped_by_run <- group_by(dis_limit_all_df, NumDead, DisseminationLimit, Behaviour)
 df1 <- summarise(grouped_by_run, 
                      sum_updates = sum(UpdatesInRound),
                      sum_eff_updates = sum(EffectiveUpdatesInRound))
-df2 <- melt(df1, id = c("NumDead","DisseminationLimit","RunRand","Run"),
+df2 <- melt(df1, id = c("NumDead","DisseminationLimit","Behaviour"),
             variable.name = "UpdateType")
 df3 <- group_by(df2, NumDead, DisseminationLimit, UpdateType)
 df4 <- summarise(df3, 

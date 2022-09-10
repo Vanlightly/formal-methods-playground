@@ -68,15 +68,15 @@ CONSTANTS Nil,                      \* Empty numeric value
           DeadMembersMin, DeadMembersMax,         
           \* The number of members yet to join
           UnjoinedMembersMin, UnjoinedMembersMax,      
-          DynamicSuspectTimeoutEnabled,
-          MemberLeavesEnabled,      \* TRUE or FALSE as to the MemberLeaves action is enabled
-          MessageLossMode,          \* "none" = no message loss
-                                    \* "probabilistic" randomly drops messages, based on LoseEveryNth 
-                                    \* "exhaustive" chooses both (model checking mode)     
-          ForceRunToRound,          \* For use in simulation. When 0, the simulation will stop at convergence
-                                    \* When > 0, the simulation will run to this number of rounds
-          PrintStatsOnDeadlock,     \* For use in simulation. TRUE/FALSE as to whether to print the obtained stats when the simulation ends.
-          PrintStatsWithoutConvergence,
+          DynamicSuspectTimeoutEnabled, \* Whether or not to set suspect timeout dynamically to 3*(log(n+1))
+          MemberLeavesEnabled,          \* TRUE or FALSE as to the MemberLeaves action is enabled
+          MessageLossMode,              \* "none" = no message loss
+                                        \* "probabilistic" randomly drops messages, based on LoseEveryNth 
+                                        \* "exhaustive" chooses both (model checking mode)     
+          ForceRunToRound,              \* For use in simulation. When 0, the simulation will stop at convergence
+                                        \* When > 0, the simulation will run to this number of rounds
+          PrintStatsOnDeadlock,         \* For use in simulation. TRUE/FALSE as to whether to print the obtained stats when the simulation ends.
+          PrintStatsWithoutConvergence, \* For use in simulation. TRUE/FALSE as to whether to print the obtained stats when the simulation ends without convergence.
           RoundStatsCSV,
           MemberStatsCSV,
           MemberMessageLoadStatsCSV
@@ -121,23 +121,19 @@ ASSUME DynamicSuspectTimeoutEnabled \in BOOLEAN
 
 \* ASSUME DeadMemberCount + NewMemberCount + InitialContacts <= NumMembers - UnjoinedMemberCount
 
-\* 14 Round,MessagesExchanged,DirectProbesToDead,IndirectProbesToDead,UpdatesInRound,EffectiveUpdatesInRound,AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity
-\* 4 Member,ReceivedMessages,ReceivedProbeMessages,ReceivedProbeRequestMessages
-\* 10 NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound,
-
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"RunRand,Run,Round,MessagesExchanged,DirectProbesToDead,IndirectProbesToDead,UpdatesInRound,EffectiveUpdatesInRound,AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o RoundStatsCSV>>
+        <<"bash", "-c", "echo \"Behaviour,Round,MessagesExchanged,DirectProbesToDead,IndirectProbesToDead,UpdatesInRound,EffectiveUpdatesInRound,AliveMembersCount,SuspectMembersCount,DeadMembersCount,AliveStatesCount,SuspectStatesCount,DeadStatesCount,InfectiveStatesCount,Infectivity,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o RoundStatsCSV>>
         ).exitValue = 0 \* Fail fast if RoundStatsCSV was not created.
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"RunRand,Run,Member,ReceivedMessages,ReceivedProbeMessages,ReceivedProbeRequestMessages,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o MemberStatsCSV>>
+        <<"bash", "-c", "echo \"Behaviour,Member,ReceivedMessages,ReceivedProbeMessages,ReceivedProbeRequestMessages,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o MemberStatsCSV>>
         ).exitValue = 0 \* Fail fast if MemberStatsCSV was not created.
 
 ASSUME 
     IOExec(
-        <<"bash", "-c", "echo \"RunRand,Run,Round,Member,AllMessages,IncomingMessages,OutgoingMessages,DeadStates,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o MemberMessageLoadStatsCSV>>
+        <<"bash", "-c", "echo \"Behaviour,Round,Member,AllMessages,IncomingMessages,OutgoingMessages,DeadStates,NumMembers,NumDead,NumNew,SuspectTimeout,DisseminationLimit,MaxUpdatesPerPiggyBack,LoseEveryNth,PeerGroupSize,InitialContacts,MaxRound\" > " \o MemberMessageLoadStatsCSV>>
         ).exitValue = 0 \* Fail fast if MemberMessageLoadStatsCSV was not created.        
             
 VARIABLES \* actual state in the protocol
@@ -351,14 +347,7 @@ CannotConvergeOnJoined ==
                 /\ m # peer
                 /\ peer_states[m][joined].state = AliveState
                 /\ peer_states[m][joined].disseminations < DisseminationLimit
-                \*/\ PrintT(<<joined, peer, m>>)
             
-            
-            (*/\ m # joined
-            /\ m # peer
-            /\ peer_states[m][joined].state = AliveState
-            /\ peer_states[m][joined].disseminations < DisseminationLimit*)
-
 WillBeConverged ==
     IsConverged(incarnation, peer_states', Member, Nil, DeadState, AliveState)
     
@@ -403,9 +392,6 @@ At the end of a simulation, the statistics are gathered from the counters and va
 in CSV format.
 *)
 
-run_rand == 1
-run_ctr == 2
-
 updates_pr_ctr(r) ==
     (r * 100)
 
@@ -440,9 +426,7 @@ dead_states_of_member_ctr(r, member) ==
     (r * 100) + 10 + member  
 
 ResetStats(max_round) ==
-    \* /\ TLCSet(run_rand, 0)
-    /\ TLCSet(run_rand, RandomElement(1..1000000))
-    /\ \A r \in 1..max_round :
+    \A r \in 1..max_round :
         /\ TLCSet(updates_pr_ctr(r), 0)
         /\ TLCSet(eff_updates_pr_ctr(r), 0)
         /\ IF r = 1 
@@ -518,21 +502,21 @@ IsNewRoundTransitionStep(inc, r1, r2, nil, mem, pstates, dead_state) ==
 
 MayBeRecordMemberCounts ==
     \* Is this is a step that leads to all members being on the same round then record the member count stats
-        IF  IsNewRoundTransitionStep(incarnation, round, round', Nil, Member, peer_states, DeadState)
-        THEN
-            LET r == MaxRound
-            IN
-                /\ TLCSet(suspect_ctr(r), NextStateMemberCount(SuspectState))
-                /\ TLCSet(dead_ctr(r), NextStateMemberCount(DeadState))
-                /\ TLCSet(alive_ctr(r), NextStateMemberCount(AliveState))
-                /\ TLCSet(suspect_states_ctr(r), NextStateStateCount(SuspectState))
-                /\ TLCSet(dead_states_ctr(r), NextStateStateCount(DeadState))
-                /\ TLCSet(alive_states_ctr(r), NextStateStateCount(AliveState))
-                /\ TLCSet(infective_states_ctr(r), TotalInfectiveStates(DisseminationLimit, peer_states, Member))
-                /\ TLCSet(infectivity_ctr(r), TotalInfectivity(DisseminationLimit, peer_states, Member))
-                /\ \A m \in Member :
-                    TLCSet(dead_states_of_member_ctr(r, m), StateCountOfMember(DeadState, peer_states, Member, m))
-        ELSE TRUE
+    IF  IsNewRoundTransitionStep(incarnation, round, round', Nil, Member, peer_states, DeadState)
+    THEN
+        LET r == MaxRound
+        IN
+            /\ TLCSet(suspect_ctr(r), NextStateMemberCount(SuspectState))
+            /\ TLCSet(dead_ctr(r), NextStateMemberCount(DeadState))
+            /\ TLCSet(alive_ctr(r), NextStateMemberCount(AliveState))
+            /\ TLCSet(suspect_states_ctr(r), NextStateStateCount(SuspectState))
+            /\ TLCSet(dead_states_ctr(r), NextStateStateCount(DeadState))
+            /\ TLCSet(alive_states_ctr(r), NextStateStateCount(AliveState))
+            /\ TLCSet(infective_states_ctr(r), TotalInfectiveStates(DisseminationLimit, peer_states, Member))
+            /\ TLCSet(infectivity_ctr(r), TotalInfectivity(DisseminationLimit, peer_states, Member))
+            /\ \A m \in Member :
+                TLCSet(dead_states_of_member_ctr(r, m), StateCountOfMember(DeadState, peer_states, Member, m))
+    ELSE TRUE
 
 RecordIncomingGossipStats(member, gossip_source, incoming_peer_states, end_of_round) ==
     LET updates_ctr_id     == updates_pr_ctr(round[gossip_source])
@@ -595,29 +579,14 @@ IndirectProbeDeadMessageLoad(r) ==
         /\ msg.on_behalf_of # Nil
         /\ incarnation[msg.dest] = Nil)        
 
-TLCGetFold(i, P(_,_), base) ==
-    TRUE \* See module override for actual definition.
-
-SK ==
-    55
-
-PrintStats ==
-    TLCSet(SK, [m \in Member |-> TLCGet(SK)[m] + ReceivedProbeRequestMessageLoad(m)])
-
-Merge(seq1, seq2) ==
-    [ i \in DOMAIN seq1 |-> seq1[i] + seq2[i] ]
-
-PostCond == 
-    PrintT(TLCGetFold(SK, Merge, [ m \in Member |-> 0]))
-
 PrintStatsToCSV ==
     \* \E behaviour_id \in {RandomElement(1..1000000)} :
     LET max_stats_round == MaxRound
         behaviour_id    == TLCGet("stats").behavior.id
     IN
         /\ \A member \in LiveMember : 
-            CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s,%16$s",
-                <<behaviour_id, TLCGet(run_ctr), 
+            CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s",
+                <<behaviour_id, 
                     member, ReceivedMessageLoad(member), ReceivedProbeMessageLoad(member),
                     ReceivedProbeRequestMessageLoad(member),
                     cfg_num_members, cfg_dead_members, cfg_new_members, SuspectTimeout,
@@ -650,8 +619,8 @@ PrintStatsToCSV ==
                                         THEN TotalInfectivity(DisseminationLimit, peer_states, Member)
                                         ELSE TLCGet(infectivity_ctr(r))
             IN
-                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s,%16$s,%17$s,%18$s,%19$s,%20$s,%21$s,%22$s,%23$s,%24$s,%25$s,%26$s",
-                    <<behaviour_id, TLCGet(run_ctr), 
+                /\ CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s,%16$s,%17$s,%18$s,%19$s,%20$s,%21$s,%22$s,%23$s,%24$s,%25$s",
+                    <<behaviour_id, 
                         r, RoundMessageLoad(r), DirectProbeDeadMessageLoad(r), IndirectProbeDeadMessageLoad(r), TLCGet(updates_pr_ctr(r)),
                         TLCGet(eff_updates_pr_ctr(r)), alive_count, suspect_count, dead_count,
                         alive_states_count, suspect_states_count, dead_states_count,
@@ -665,8 +634,8 @@ PrintStatsToCSV ==
                                                  THEN StateCountOfMember(DeadState, peer_states, Member, member)
                                                  ELSE TLCGet(dead_states_of_member_ctr(r, member))
                     IN
-                        CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s,%16$s,%17$s,%18$s",
-                            <<behaviour_id, TLCGet(run_ctr), 
+                        CSVWrite("%1$s,%2$s,%3$s,%4$s,%5$s,%6$s,%7$s,%8$s,%9$s,%10$s,%11$s,%12$s,%13$s,%14$s,%15$s,%16$s,%17$s",
+                            <<behaviour_id, 
                                 r, member, MessageLoad(r, member), IncomingMessageLoad(r, member),
                                 OutgoingMessageLoad(r, member), dead_states_of_member,
                                 cfg_num_members, cfg_dead_members, cfg_new_members, SuspectTimeout,
@@ -693,16 +662,7 @@ PrintNoConvergence ==
         /\ PrintT("no-convergence" \o cfg_str)
         /\ PrintT("result")
 
-SimStarted ==
-    TLCGet(run_rand) > 0
-
-StartSim ==
-    /\ ~SimStarted
-    \* /\ TLCSet(run_rand, RandomElement(1..1000000))
-    /\ UNCHANGED vars
-
 EndSim ==
-    /\ SimStarted
     /\ StopConditionReached
     /\ sim_status # 1
     /\ IF PrintStatsOnDeadlock = TRUE 
@@ -714,7 +674,6 @@ EndSim ==
                  ELSE PrintT("no-convergence") 
        ELSE TRUE
     /\ sim_status' = 1
-    /\ TLCSet(run_ctr, TLCGet(run_ctr) + 1)
     /\ UNCHANGED <<configVars, incarnation, peer_states, messages, pending_direct_ack, pending_indirect_ack, probe_ctr, round, initial_state_vars>>
 
 RecordGossipStats(member, gossip_source, incoming_states, end_of_round) ==
@@ -897,7 +856,6 @@ IsFairlyScheduled(member, peer) ==
 
 \* The sending of a direct probe is the beginning of a new protocol period.
 SendDirectProbe(member, peer) ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ member # peer
     /\ incarnation[member] # Nil            \* The member is alive
@@ -950,7 +908,6 @@ SendAck(probe, source_incarnation, merged_peer_state, piggyback_gossip) ==
                         gossip       |-> piggyback_gossip])
  
 ReceiveProbe ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ CanReceiveMessage(msg, ProbeMessage)
@@ -976,7 +933,6 @@ Handles an ack message (from a direct probe only) from a peer.
 Increments this member's round as this is the end of a protocol round 
 *)
 ReceiveAck ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ CanReceiveMessage(msg, AckMessage)
@@ -1006,7 +962,6 @@ We can run as variant 2 by setting the timeout to 0 which means
 immediate expiry.
 *)
 Expire(member, peer) ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ member # peer
     /\ peer_states[member][peer].state = SuspectState
@@ -1078,7 +1033,6 @@ DirectProbeFailed(msg) ==
         /\ messages[ack] >= 1
         
 SendProbeRequest ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ DirectProbeFailed(msg)
@@ -1110,7 +1064,6 @@ ProbeRequestsSent(member) ==
         /\ msg.source = member
 
 NoPeersForProbeRequest ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ DirectProbeFailed(msg)
@@ -1133,7 +1086,6 @@ Receives a probe request and then sends a probe to the target peer.
 *)
 
 ReceiveProbeRequest ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ CanReceiveMessage(msg, ProbeRequestMessage)
@@ -1182,7 +1134,6 @@ ForwardedAck(msg, merged_peer_state, gossip_to_send) ==
      gossip       |-> gossip_to_send]
 
 ReceiveProbeRequestAck ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ CanReceiveMessage(msg, AckMessage)
@@ -1213,7 +1164,6 @@ and increments its own round as this is the end of a protocol round for this mem
 *)
 
 ReceiveForwardedAck ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E msg \in DOMAIN messages :
         /\ CanReceiveMessage(msg, ForwardedAckMessage)
@@ -1270,7 +1220,6 @@ NoMoreProbeRequestsToSend(member) ==
     IN NoEligiblePeersForProbeRequest(failed_probe)
 
 NoResponseToProbeRequests ==
-    /\ SimStarted
     /\ ~StopConditionReached
     /\ \E member \in Member :
         /\ pending_indirect_ack[member] # Nil
@@ -1372,9 +1321,6 @@ Init ==
         /\ cfg_new_members = new_members
         /\ cfg_dead_members = dead_members
         /\ cfg_unjoined_members = unjoined_member
-        \* /\ TLCSet(run_rand, 0)
-        /\ TLCSet(SK, [m \in Member |-> 0])
-        /\ TLCSet(run_ctr, 0)
         /\ initial_state_dead = RandomSubset(dead_members, Member) 
         /\ initial_state_joined = RandomSubset(new_members, (Member \ initial_state_dead))
         /\ initial_state_unjoined = RandomSubset(unjoined_member, (Member \ (initial_state_dead \union initial_state_joined))) 
@@ -1415,7 +1361,6 @@ Next ==
     \/ MemberJoins
     \/ MemberLeaves
     \/ MessageIgnored
-    \/ StartSim
     \/ EndSim
 
 MemberOrNil ==
@@ -1447,13 +1392,6 @@ HasInfectiveInfo ==
 
 Inv ==
     TRUE
-    \*/\ TLCGet("level") < 1000
-    (*/\ IF (~ ENABLED Next) 
-       THEN
-            IF sim_status = 1 
-            THEN TRUE
-            ELSE Print(<<"C", IsConverged(incarnation, peer_states, Nil, DeadState, AliveState)>>, FALSE)
-       ELSE TRUE*)
 
 Liveness ==
     WF_vars(Next)
