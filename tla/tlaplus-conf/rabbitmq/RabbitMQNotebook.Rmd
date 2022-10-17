@@ -23,6 +23,9 @@ suffix <- "Random20_4"
 # title <- "Concurrent start of all clients - Optimized"
 # suffix <- "RandomOpt20"
 
+# title <- "Stop one client"
+# suffix <- "StopClient20Test"
+
 title <- as_tibble(title)
 raw_total_rel_df <- read.csv(file = paste("results/raw/TotalReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
 raw_per_app_rel_df <- read.csv(file = paste("results/raw/PerAppReleases", suffix, ".csv", sep=""), stringsAsFactors = TRUE)
@@ -146,7 +149,7 @@ sd_rel_plot(per_app_round_summary, "Rounds", "Rounds of releases per application
 Percentiles view.
 
 ```{r}
-pct_plot(pct_per_app_round_df_q20, "Rounds of releases per application")
+pct_plot(pct_per_app_round_df_q20, "Rounds to reach stability")
 ```
 
 ### The number of releases per queue
@@ -159,4 +162,32 @@ Percentiles view.
 
 ```{r}
 pct_plot(pct_per_queue_rel_df_q20, "Number of releases per queue")
+```
+
+```{r}
+filtered <- filter(raw_per_app_rounds_df_q20_grouped, AppCount %% 5 == 0)
+ggplot(filtered, 
+       aes(x = AppCount, y = PerAppRounds, group = AppCount)) +
+  geom_violin(adjust=4, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Rounds",
+    title = "Round distribution at different client counts",
+    subtitle = "Queues: 20"
+  ) 
+```
+
+```{r}
+filtered <- filter(raw_total_rel_df_q20_grouped, AppCount %% 5 == 0)
+ggplot(filtered, 
+       aes(x = AppCount, y = TotalReleases, group = AppCount)) +
+  geom_violin(adjust=4, bw="nrd", kernel="gaussian") +
+  theme_minimal() +
+  labs(
+    x = "Number of clients",
+    y = "Total queue releases",
+    title = "Distribution of queue releases for different client counts",
+    subtitle = "Queues: 20"
+  ) 
 ```
